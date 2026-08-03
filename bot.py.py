@@ -121,6 +121,16 @@ async def edit_progress_message(status_msg, text):
             pass
 
 
+def _progress_text(meta_caption, frame, percent=None, downloaded_bytes=None):
+    """يبني نص التقدم: شريط نسبة إن عُرف الحجم الكلي، وإلا يعرض حجم ما تم تحميله فعلياً"""
+    if percent is not None:
+        body = build_progress_bar(percent)
+    else:
+        mb = (downloaded_bytes or 0) / (1024 * 1024)
+        body = f"تم تحميل {mb:.1f} MB..."
+    return f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل...\n{body}"
+
+
 def download_file_with_progress(direct_url, dest_path, loop, status_msg, meta_caption):
     """تنزيل رابط مباشر (تيك توك) عبر requests مع تحديث حي لنسبة التقدم"""
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -137,15 +147,12 @@ def download_file_with_progress(direct_url, dest_path, loop, status_msg, meta_ca
                 f.write(chunk)
                 downloaded += len(chunk)
                 now = time.time()
-                if now - last_update >= 1.2:
+                # تحديث كل ~0.8 ثانية حتى تظهر حركة النسبة بوضوح
+                if now - last_update >= 0.8:
                     last_update = now
-                    percent = (downloaded / total * 100) if total else 0
                     frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
-                    text = (
-                        f"{meta_caption}\n\n"
-                        f"{SPINNER_FRAMES[frame_idx]} جاري التحميل...\n"
-                        f"{build_progress_bar(percent)}"
-                    )
+                    percent = (downloaded / total * 100) if total > 0 else None
+                    text = _progress_text(meta_caption, frame_idx, percent, downloaded)
                     asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
     return dest_path
 
@@ -157,21 +164,31 @@ def yt_dlp_download_with_progress(url, dest_template, loop, status_msg, meta_cap
     def hook(d):
         if d.get("status") == "downloading":
             now = time.time()
-            if now - state["last_update"] < 1.2:
+            if now - state["last_update"] < 0.8:
                 return
             state["last_update"] = now
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            downloaded = d.get("downloaded_bytes", 0)
-            percent = (downloaded / total * 100) if total else 0
             state["frame"] = (state["frame"] + 1) % len(SPINNER_FRAMES)
-            text = (
-                f"{meta_caption}\n\n"
-                f"{SPINNER_FRAMES[state['frame']]} جاري التحميل...\n"
-                f"{build_progress_bar(percent)}"
-            )
+
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+
+            if total:
+                # الحجم الكلي معروف -> نسبة دقيقة
+                percent = downloaded / total * 100
+            else:
+                # بعض المنصات (إنستغرام مثلاً) لا ترسل الحجم الكلي؛
+                # نحاول الاعتماد على عدد الأجزاء (fragments) إن وُجد
+                frag_idx = d.get("fragment_index")
+                frag_count = d.get("fragment_count")
+                if frag_idx is not None and frag_count:
+                    percent = frag_idx / frag_count * 100
+                else:
+                    percent = None  # سيتم عرض حجم البيانات بدل النسبة
+
+            text = _progress_text(meta_caption, state["frame"], percent, downloaded)
             asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
         elif d.get("status") == "finished":
-            text = f"{meta_caption}\n\n⏳ جاري المعالجة والرفع..."
+            text = f"{meta_caption}\n\n⏳ جاري المعالجة..."
             asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
 
     ydl_opts = {
@@ -245,19 +262,22 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
     return await query.edit_message_text(text)
 
 
-async def send_final_file(status_msg, filepath, meta_caption, is_audio=False):
+async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
+
+    # 🔴 نحذف رسالة الصورة فور اكتمال التحميل، قبل رفع الفيديو للمستخدم
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
     try:
         with open(filepath, "rb") as f:
             if is_audio:
-                await status_msg.reply_audio(audio=f, caption=caption)
+                await bot.send_audio(chat_id=chat_id, audio=f, caption=caption)
             else:
-                await status_msg.reply_video(video=f, caption=caption, supports_streaming=True)
+                await bot.send_video(chat_id=chat_id, video=f, caption=caption, supports_streaming=True)
     finally:
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
         if os.path.exists(filepath):
             os.remove(filepath)
 
@@ -277,6 +297,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     want_audio = query.data == "v_audio"
     loop = asyncio.get_running_loop()
+    chat_id = query.message.chat_id
+    bot = context.bot
 
     try:
         # 1️⃣ نفس منطق تيك توك الأصلي عبر TikWM API + إضافة الوصف والتقدم
@@ -307,7 +329,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await loop.run_in_executor(
                 None, download_file_with_progress, direct_url, filename, loop, status_msg, meta_caption
             )
-            await send_final_file(status_msg, filename, meta_caption, is_audio=want_audio)
+            await send_final_file(bot, chat_id, status_msg, filename, meta_caption, is_audio=want_audio)
             return
 
         # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ) + الوصف والتقدم
@@ -332,7 +354,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_caption(caption="❌ تعذر جلب المقطع، جرب رابطاً آخر.")
                 return
 
-            await send_final_file(status_msg, filepath, meta_caption, is_audio=want_audio)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=want_audio)
             return
 
     except Exception as e:
