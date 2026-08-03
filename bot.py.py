@@ -327,22 +327,53 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
     return await query.edit_message_text(text)
 
 
+async def upload_ticker(status_msg, meta_caption, filepath):
+    """يعرض نسبة تقديرية متحركة أثناء الرفع (تيليجرام لا يوفر نسبة رفع حقيقية)،
+    مبنية على حجم الملف وسرعة رفع افتراضية، محدودة بـ 95% حتى يكتمل الرفع فعلياً"""
+    try:
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    except OSError:
+        size_mb = 5
+    assumed_speed_mbps = 1.5  # سرعة رفع تقديرية متحفظة
+    estimated_seconds = max(4, size_mb / assumed_speed_mbps)
+
+    frame = 0
+    start = time.time()
+    try:
+        while True:
+            frame = (frame + 1) % len(SPINNER_FRAMES)
+            elapsed = time.time() - start
+            percent = min(95, (elapsed / estimated_seconds) * 100)
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري رفع الفيديو...\n{build_progress_bar(percent)}"
+            await edit_progress_message(status_msg, text)
+            await asyncio.sleep(1.2)
+    except asyncio.CancelledError:
+        pass
+
+
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
 
-    # نُبقي رسالة الصورة ظاهرة مع مؤشر "جاري الرفع" طوال مدة الرفع، لتفادي أي فراغ زمني
-    try:
-        await edit_progress_message(status_msg, f"{meta_caption}\n\n📤 جاري رفع الفيديو...")
-    except Exception:
-        pass
-
+    # نُبقي رسالة الصورة ظاهرة مع نسبة رفع متحركة طوال مدة الرفع، لتفادي أي تجمّد أو فراغ
+    ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption, filepath))
     try:
         with open(filepath, "rb") as f:
             if is_audio:
-                await bot.send_audio(chat_id=chat_id, audio=f, caption=caption)
+                await bot.send_audio(
+                    chat_id=chat_id, audio=f, caption=caption,
+                    read_timeout=180, write_timeout=180, connect_timeout=30,
+                )
             else:
-                await bot.send_video(chat_id=chat_id, video=f, caption=caption, supports_streaming=True)
+                await bot.send_video(
+                    chat_id=chat_id, video=f, caption=caption, supports_streaming=True,
+                    read_timeout=180, write_timeout=180, connect_timeout=30,
+                )
     finally:
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass
         if os.path.exists(filepath):
             os.remove(filepath)
 
@@ -452,7 +483,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    request = HTTPXRequest(connect_timeout=30, read_timeout=30)
+    # مهلات أطول لأن رفع ملفات فيديو كبيرة قد يستغرق دقائق
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=180,
+        write_timeout=180,
+        pool_timeout=30,
+    )
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
