@@ -240,11 +240,17 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 30,
+        "socket_timeout": 60,
         "retries": 5,
         "fragment_retries": 5,
         "merge_output_format": "mp4",
         "progress_hooks": [hook],
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
     }
 
     if audio_only:
@@ -267,7 +273,19 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
 
 def extract_info_only(url):
     """جلب معلومات الفيديو فقط (بدون تنزيل) للحصول على الصورة المصغرة والوصف"""
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, "socket_timeout": 15}
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -387,6 +405,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ) + الوصف والتقدم
         else:
+            # تحديث فوري حتى لا تبقى الرسالة بلا رد أثناء انتظار معلومات الفيديو (قد تستغرق ثوانٍ لإنستغرام)
+            await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
+
             info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
             meta_caption = build_meta_caption(
                 uploader=info.get("uploader") or info.get("channel"),
