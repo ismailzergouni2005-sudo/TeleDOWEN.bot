@@ -330,9 +330,9 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
 
-    # 🔴 نحذف رسالة الصورة فور اكتمال التحميل، قبل رفع الفيديو للمستخدم
+    # نُبقي رسالة الصورة ظاهرة مع مؤشر "جاري الرفع" طوال مدة الرفع، لتفادي أي فراغ زمني
     try:
-        await status_msg.delete()
+        await edit_progress_message(status_msg, f"{meta_caption}\n\n📤 جاري رفع الفيديو...")
     except Exception:
         pass
 
@@ -345,6 +345,12 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
+
+    # نحذف رسالة الصورة فقط بعد ظهور الفيديو فعلياً -> لا يوجد فراغ بينهما
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
