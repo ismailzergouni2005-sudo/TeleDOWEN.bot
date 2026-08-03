@@ -327,26 +327,18 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
     return await query.edit_message_text(text)
 
 
-async def upload_ticker(status_msg, meta_caption, filepath):
-    """يعرض نسبة تقديرية متحركة أثناء الرفع (تيليجرام لا يوفر نسبة رفع حقيقية)،
-    مبنية على حجم الملف وسرعة رفع افتراضية، محدودة بـ 95% حتى يكتمل الرفع فعلياً"""
-    try:
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
-    except OSError:
-        size_mb = 5
-    assumed_speed_mbps = 1.5  # سرعة رفع تقديرية متحفظة
-    estimated_seconds = max(4, size_mb / assumed_speed_mbps)
-
+async def upload_ticker(status_msg, meta_caption):
+    """يعرض مؤشراً حياً وصادقاً أثناء الرفع (عدّاد وقت فعلي + دائرة متحركة)،
+    بدون نسبة مئوية وهمية لأن تيليجرام لا يوفر نسبة رفع حقيقية عبر الـ API"""
     frame = 0
     start = time.time()
     try:
         while True:
             frame = (frame + 1) % len(SPINNER_FRAMES)
-            elapsed = time.time() - start
-            percent = min(95, (elapsed / estimated_seconds) * 100)
-            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري رفع الفيديو...\n{build_progress_bar(percent)}"
+            elapsed = int(time.time() - start)
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري رفع الفيديو... ({elapsed} ث)"
             await edit_progress_message(status_msg, text)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(2.0)
     except asyncio.CancelledError:
         pass
 
@@ -354,8 +346,8 @@ async def upload_ticker(status_msg, meta_caption, filepath):
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
 
-    # نُبقي رسالة الصورة ظاهرة مع نسبة رفع متحركة طوال مدة الرفع، لتفادي أي تجمّد أو فراغ
-    ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption, filepath))
+    # نُبقي رسالة الصورة ظاهرة مع عدّاد وقت حي طوال مدة الرفع، لتفادي أي تجمّد أو فراغ
+    ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption))
     try:
         with open(filepath, "rb") as f:
             if is_audio:
@@ -484,11 +476,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # مهلات أطول لأن رفع ملفات فيديو كبيرة قد يستغرق دقائق
+    # + زيادة عدد الاتصالات المتزامنة (pool) حتى لا تتزاحم طلبات تحديث الرسالة مع طلب الرفع نفسه ويبطئه
     request = HTTPXRequest(
         connect_timeout=30,
         read_timeout=180,
         write_timeout=180,
         pool_timeout=30,
+        connection_pool_size=8,
     )
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
