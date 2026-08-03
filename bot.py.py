@@ -29,6 +29,10 @@ threading.Thread(target=run_web, daemon=True).start()
 # 🎯 مسار FFmpeg المباشر
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
+# 🍪 مسار ملف الكوكيز المطلق لتجنب خطأ الوصول للملف في Render
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_PATH = os.path.join(BASE_DIR, 'www.youtube.com_cookies.txt')
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -44,18 +48,24 @@ COMMON_YDL_OPTS = {
     'socket_timeout': 30,
     'retries': 5,
     'fragment_retries': 5,
-    'cookiefile': 'www.youtube.com_cookies.txt',  # 🍪 مطابق لاسم الملف الخاص بك في GitHub
     'extractor_args': {
         'youtube': {
-            'player_client': ['ios', 'android', 'web']
+            'player_client': ['ios', 'android', 'mweb', 'web']
         }
     },
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
     }
 }
+
+# 🔒 إضافة الكوكيز فقط إذا كان الملف موجوداً بالفعل
+if os.path.exists(COOKIE_PATH):
+    COMMON_YDL_OPTS['cookiefile'] = COOKIE_PATH
+    logging.info("✅ تم تحميل ملف الكوكيز بنجاح!")
+else:
+    logging.warning("⚠️ لم يتم العثور على ملف الكوكيز!")
 
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
@@ -304,13 +314,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
         
         err_msg = str(e)
-        clean_err = "❌ تعذر تحميل المقطع من المنصة حالياً، يرجى المحاولة لاحقاً."
+        clean_err = f"❌ تعذر تحميل المقطع من المنصة حالياً، يرجى المحاولة لاحقاً.\n التفاصيل: {err_msg[:100]}"
         
-        if "Sign in to confirm" in err_msg:
-            clean_err = "❌ يوتيوب يتطلب تأكيد الحساب لهذا المقطع على السيرفر الخارجي."
-        elif "Gateway Timeout" in err_msg:
-            clean_err = "❌ تعذر الاتصال بالمنصة (تأخير في الاستجابة). يرجى المحاولة بعد قليل."
-
         try:
             await query.edit_message_text(clean_err, disable_web_page_preview=True)
         except:
