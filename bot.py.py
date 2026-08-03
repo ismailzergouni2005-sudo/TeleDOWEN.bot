@@ -29,7 +29,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # 🎯 مسار FFmpeg المباشر
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
-# 🍪 مسار ملف الكوكيز المطلق لتجنب خطأ الوصول للملف في Render
+# 🍪 مسار ملف الكوكيز المطلق
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_PATH = os.path.join(BASE_DIR, 'www.youtube.com_cookies.txt')
 
@@ -60,12 +60,8 @@ COMMON_YDL_OPTS = {
     }
 }
 
-# 🔒 إضافة الكوكيز فقط إذا كان الملف موجوداً بالفعل
 if os.path.exists(COOKIE_PATH):
     COMMON_YDL_OPTS['cookiefile'] = COOKIE_PATH
-    logging.info("✅ تم تحميل ملف الكوكيز بنجاح!")
-else:
-    logging.warning("⚠️ لم يتم العثور على ملف الكوكيز!")
 
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
@@ -136,14 +132,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(info_message, reply_markup=reply_markup, parse_mode='Markdown')
         return
 
-    status_msg = await update.message.reply_text("🔍 جاري جلب الجودات ومعلومات الفيديو... ⏳")
+    status_msg = await update.message.reply_text("🔍 جاري جلب الجودات والمعلومات... ⏳")
     sizes = {}
     loop = asyncio.get_event_loop()
 
     def extract_info():
         opts = COMMON_YDL_OPTS.copy()
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
+        opts['format'] = 'best'  # إصلاح مرونة استخراج الجودات
+        opts['skip_download'] = True
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception:
+            return {}
 
     try:
         info = await loop.run_in_executor(None, extract_info)
@@ -154,7 +155,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if height and filesize and height not in sizes:
                 sizes[height] = filesize
     except Exception as e:
-        logging.warning(f"تعذر استخراج الأبعاد تلقائياً: {e}")
+        logging.warning(f"تجاوز استخراج الأحجام: {e}")
 
     def get_s(res_target):
         for h, sz in sizes.items():
@@ -314,7 +315,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
         
         err_msg = str(e)
-        clean_err = f"❌ تعذر تحميل المقطع من المنصة حالياً، يرجى المحاولة لاحقاً.\n التفاصيل: {err_msg[:100]}"
+        clean_err = "❌ تعذر تحميل المقطع من المنصة حالياً، يرجى المحاولة لاحقاً."
         
         try:
             await query.edit_message_text(clean_err, disable_web_page_preview=True)
