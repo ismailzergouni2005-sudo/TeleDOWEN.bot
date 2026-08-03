@@ -1,12 +1,10 @@
 import os
 import re
-import glob
 import logging
-import time
 import asyncio
 import threading
+import requests
 from flask import Flask
-import imageio_ffmpeg
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
@@ -25,7 +23,6 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 logging.basicConfig(level=logging.INFO)
 TOKEN = "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk"
 
@@ -35,6 +32,23 @@ def clean_url(url: str) -> str:
         if match:
             return match.group(1) + "/"
     return url
+
+def download_tiktok_fast(tiktok_url):
+    """جلب رابط فيديو تيك توك بدون علامة مائية فوراً عبر TikWM API"""
+    api_url = "https://www.tikwm.com/api/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    params = {"url": tiktok_url, "hd": 1}
+    
+    response = requests.get(api_url, params=params, headers=headers, timeout=10)
+    data = response.json()
+    
+    if data.get("code") == 0:
+        # إرجاع رابط الفيديو المباشر (HD أو عادي)
+        video_link = data["data"].get("hdplay") or data["data"].get("play")
+        return video_link
+    return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✨ أهلاً بك! أرسل لي أي رابط وسأقوم بمعالجته فوراً 🚀")
@@ -50,7 +64,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['download_url'] = url
 
     keyboard = [
-        [InlineKeyboardButton("⚡ تحميل سريع", callback_data="v_instant")],
+        [InlineKeyboardButton("⚡ تحميل سريع فوري", callback_data="v_instant")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")]
     ]
     await update.message.reply_text("👇 **اختر التحميل:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -68,41 +82,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ انتهت الجلسة، أرسل الرابط مجدداً.")
         return
 
-    status_msg = await query.edit_message_text("⚡ **جاري معالجة الفيديو...**")
+    status_msg = await query.edit_message_text("⚡ **جاري جلب الفيديو فوراً...**")
     loop = asyncio.get_running_loop()
 
     try:
-        # معالجة تيك توك عبر التحميل المحلي السريع والتنظيف
+        # 1️⃣ معالجة فائقة السرعة لتيك توك عبر API
         if "tiktok.com" in url:
-            filename = f"downloads/tiktok_{int(time.time())}.mp4"
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'b/best',
-                'outtmpl': filename,
-                'ffmpeg_location': FFMPEG_PATH,
-                'socket_timeout': 15,
-            }
-
-            def download_tiktok():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-
-            await loop.run_in_executor(None, download_tiktok)
-
-            # البحث عن الملف المنزل
-            matches = glob.glob(filename.rsplit('.', 1)[0] + '.*')
-            if matches:
-                filename = matches[0]
-
-            with open(filename, 'rb') as f:
-                await query.message.reply_video(video=f, caption="تم تحميل تيك توك بنجاح! 🎵✨")
+            tiktok_direct_url = await loop.run_in_executor(None, download_tiktok_fast, url)
             
-            if os.path.exists(filename):
-                os.remove(filename)
-            await status_msg.delete()
+            if tiktok_direct_url:
+                await query.message.reply_video(
+                    video=tiktok_direct_url,
+                    caption="تم تحميل تيك توك بنجاح! 🎵✨",
+                    supports_streaming=True
+                )
+                await status_msg.delete()
+                return
+            else:
+                await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+                return
 
-        # باقي المنصات (إنستغرام، يوتيوب... إلخ) بالطريقة الفورية المباشرة
+        # 2️⃣ باقي المنصات (إنستغرام، يوتيوب... إلخ) بالطريقة الفورية المباشرة
         else:
             def get_direct_media_url(target_url):
                 ydl_opts = {
@@ -138,8 +138,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ **حدث خطأ:**\n`{str(e)[:100]}`", parse_mode='Markdown')
 
 def main():
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
     request = HTTPXRequest(connect_timeout=30, read_timeout=30)
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
@@ -147,7 +145,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل مع دعم تيك توك المباشر...")
+    print("🚀 البوت يعمل الآن بنجاح وتكامل تام...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
