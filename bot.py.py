@@ -1,6 +1,5 @@
 import os
 import re
-import time
 import logging
 import asyncio
 import threading
@@ -34,11 +33,22 @@ def clean_url(url: str) -> str:
             return match.group(1) + "/"
     return url
 
-def make_progress_bar(percent):
-    """إنشاء شريط النسبة المئوية [████░░░░] 50%"""
-    filled_length = int(10 * percent // 100)
-    bar = '█' * filled_length + '░' * (10 - filled_length)
-    return f"[{bar}] {percent:.0f}%"
+def download_tiktok_fast(tiktok_url):
+    """جلب رابط فيديو تيك توك بدون علامة مائية فوراً عبر TikWM API"""
+    api_url = "https://www.tikwm.com/api/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    params = {"url": tiktok_url, "hd": 1}
+    
+    response = requests.get(api_url, params=params, headers=headers, timeout=10)
+    data = response.json()
+    
+    if data.get("code") == 0:
+        # إرجاع رابط الفيديو المباشر (HD أو عادي)
+        video_link = data["data"].get("hdplay") or data["data"].get("play")
+        return video_link
+    return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✨ أهلاً بك! أرسل لي أي رابط وسأقوم بمعالجته فوراً 🚀")
@@ -54,7 +64,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['download_url'] = url
 
     keyboard = [
-        [InlineKeyboardButton("⚡ تحميل المقطع", callback_data="v_download")],
+        [InlineKeyboardButton("⚡ تحميل سريع فوري", callback_data="v_instant")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")]
     ]
     await update.message.reply_text("👇 **اختر التحميل:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -72,102 +82,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ انتهت الجلسة، أرسل الرابط مجدداً.")
         return
 
+    status_msg = await query.edit_message_text("⚡ **جاري جلب الفيديو فوراً...**")
     loop = asyncio.get_running_loop()
 
-    # 1️⃣ جلب معلومات المقطع والعنوان والصورة المعاينة أولاً
-    await query.edit_message_text("⏳ **جاري جلب معطيات المقطع...**")
-    
-    info_dict = None
     try:
-        def fetch_info():
-            ydl_opts = {'quiet': True, 'no_warnings': True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=False)
+        # 1️⃣ معالجة فائقة السرعة لتيك توك عبر API
+        if "tiktok.com" in url:
+            tiktok_direct_url = await loop.run_in_executor(None, download_tiktok_fast, url)
+            
+            if tiktok_direct_url:
+                await query.message.reply_video(
+                    video=tiktok_direct_url,
+                    caption="تم تحميل تيك توك بنجاح! 🎵✨",
+                    supports_streaming=True
+                )
+                await status_msg.delete()
+                return
+            else:
+                await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+                return
 
-        info_dict = await loop.run_in_executor(None, fetch_info)
-    except Exception:
-        pass
+        # 2️⃣ باقي المنصات (إنستغرام، يوتيوب... إلخ) بالطريقة الفورية المباشرة
+        else:
+            def get_direct_media_url(target_url):
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'format': 'b/best',
+                    'socket_timeout': 10,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+                    if 'url' in info:
+                        return info['url']
+                    elif 'formats' in info:
+                        for f in reversed(info['formats']):
+                            if f.get('url') and f.get('vcodec') != 'none':
+                                return f['url']
+                return None
 
-    title = info_dict.get('title', 'تحميل فيديو') if info_dict else 'جاري التحميل...'
-    thumbnail = info_dict.get('thumbnail') if info_dict else None
+            direct_video_url = await loop.run_in_executor(None, get_direct_media_url, url)
 
-    # نص الحالة الأولية
-    init_caption = f"**{title[:35]}**\n\n⭕ جاري التنزيل\n`[{'░'*10}] 0%`"
+            if not direct_video_url:
+                await query.edit_message_text("❌ تعذر جلب المقطع، جرب رابطاً آخر.")
+                return
 
-    # حذف الرسالة القديمة وإرسال صورة مع النص المتحرك (أو رسالة نصية إذا لم توجد صورة)
-    await query.delete_message()
-    
-    if thumbnail:
-        status_msg = await query.message.reply_photo(photo=thumbnail, caption=init_caption, parse_mode='Markdown')
-    else:
-        status_msg = await query.message.reply_text(text=init_caption, parse_mode='Markdown')
-
-    # متغيرة لمنع التعديل المفرط للرسائل (تجنب الحظر من تليجرام)
-    last_update_time = [time.time()]
-
-    def progress_hook(d):
-        if d['status'] == 'downloading':
-            now = time.time()
-            # التحديث كل 1.5 ثانية فقط
-            if now - last_update_time[0] > 1.5:
-                last_update_time[0] = now
-                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                downloaded = d.get('downloaded_bytes', 0)
-                
-                if total > 0:
-                    percent = (downloaded / total) * 100
-                    bar_text = make_progress_bar(percent)
-                    new_caption = f"**{title[:35]}**\n\n⭕ جاري التنزيل\n`{bar_text}`"
-                    
-                    # تعديل نص الصورة
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            status_msg.edit_caption(caption=new_caption, parse_mode='Markdown'),
-                            loop
-                        )
-                    except Exception:
-                        pass
-
-    # 2️⃣ بدء عملية التحميل المحلية
-    try:
-        filename = f"downloads/file_{int(time.time())}.mp4"
-        ydl_opts = {
-            'quiet': True,
-            'format': 'b/best',
-            'outtmpl': filename,
-            'progress_hooks': [progress_hook],
-            'socket_timeout': 15,
-        }
-
-        def run_download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-        await loop.run_in_executor(None, run_download)
-
-        # 3️⃣ رفع الفيديو بعد انتهاء التحميل
-        try:
-            await status_msg.edit_caption(caption=f"**{title[:35]}**\n\n📤 **جاري الرفع إلى تليجرام...**", parse_mode='Markdown')
-        except Exception:
-            pass
-
-        with open(filename, 'rb') as f:
-            await query.message.reply_video(video=f, caption="تم تحميل الفيديو بنجاح! ✨🚀")
-
-        # تنظيف وحذف
-        await status_msg.delete()
-        if os.path.exists(filename):
-            os.remove(filename)
+            await query.message.reply_video(
+                video=direct_video_url, 
+                caption="تم التحميل الفوري! 🚀✨",
+                supports_streaming=True
+            )
+            await status_msg.delete()
 
     except Exception as e:
-        try:
-            await status_msg.edit_caption(caption=f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:100]}`", parse_mode='Markdown')
-        except Exception:
-            pass
+        await query.edit_message_text(f"❌ **حدث خطأ:**\n`{str(e)[:100]}`", parse_mode='Markdown')
 
 def main():
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
     request = HTTPXRequest(connect_timeout=30, read_timeout=30)
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
@@ -175,7 +145,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل مع شريط النسبة وصورة المعاينة...")
+    print("🚀 البوت يعمل الآن بنجاح وتكامل تام...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
