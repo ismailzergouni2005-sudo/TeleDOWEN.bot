@@ -20,6 +20,27 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 import yt_dlp
+import os
+import threading
+from flask import Flask
+
+# 🌐 سيرفر وهمي صغير لفتح Port وإرضاء Render مجانياً
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# تشغيل السيرفر في خلفية النظام
+threading.Thread(target=run_web, daemon=True).start()
+
+# ==========================================
+# ⬇️ هنا باقي كود البوت الخاص بك كالمعتاد ⬇️
+# ==========================================
 
 # 🎯 جلب المسار المباشر لأداة FFmpeg لربطه بـ yt-dlp
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
