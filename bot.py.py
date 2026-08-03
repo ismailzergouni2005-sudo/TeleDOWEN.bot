@@ -109,7 +109,7 @@ def download_tiktok_fast(tiktok_url):
     return None
 
 
-# ---------------- تنزيل الملف مع تتبع نسبة التقدم الحقيقية ----------------
+# ---------------- تنزيل الملف مع تتبع نسبة التقدم الحقيقية (مؤشر حي مستمر) ----------------
 
 async def edit_progress_message(status_msg, text):
     try:
@@ -121,81 +121,129 @@ async def edit_progress_message(status_msg, text):
             pass
 
 
-def _progress_text(meta_caption, frame, percent=None, downloaded_bytes=None):
-    """يبني نص التقدم: شريط نسبة إن عُرف الحجم الكلي، وإلا يعرض حجم ما تم تحميله فعلياً"""
+def _progress_body(state):
+    """يبني نص جسم الرسالة حسب المرحلة الحالية (تحميل / معالجة)"""
+    stage = state.get("stage", "downloading")
+    if stage == "processing":
+        return "جاري معالجة الفيديو..."
+    percent = state.get("percent")
     if percent is not None:
-        body = build_progress_bar(percent)
-    else:
-        mb = (downloaded_bytes or 0) / (1024 * 1024)
-        body = f"تم تحميل {mb:.1f} MB..."
-    return f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل...\n{body}"
+        return build_progress_bar(percent)
+    mb = (state.get("downloaded") or 0) / (1024 * 1024)
+    return f"تم تحميل {mb:.1f} MB..."
 
 
-def download_file_with_progress(direct_url, dest_path, loop, status_msg, meta_caption):
-    """تنزيل رابط مباشر (تيك توك) عبر requests مع تحديث حي لنسبة التقدم"""
+async def progress_ticker(status_msg, meta_caption, state):
+    """مهمة تعمل باستمرار (كل ثانية تقريباً) لتحديث الرسالة بشكل حي،
+    تعمل من داخل الحلقة الرئيسية مباشرة (بدون قفزات بين الخيوط)"""
+    frame = 0
+    last_text = None
+    try:
+        while True:
+            frame = (frame + 1) % len(SPINNER_FRAMES)
+            body = _progress_body(state)
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {body}"
+            if text != last_text:
+                last_text = text
+                await edit_progress_message(status_msg, text)
+            await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        pass
+
+
+async def run_with_live_progress(func, args, status_msg, meta_caption, state):
+    """يشغّل دالة تحميل (blocking) في executor مع مؤشر تقدّم حي بالتوازي"""
+    loop = asyncio.get_running_loop()
+    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state))
+    try:
+        result = await loop.run_in_executor(None, func, *args)
+        return result
+    finally:
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass
+
+
+def download_file_with_progress(direct_url, dest_path, state):
+    """تنزيل رابط مباشر (تيك توك) عبر requests مع تحديث حالة التقدم في state"""
     headers = {"User-Agent": "Mozilla/5.0"}
     with requests.get(direct_url, headers=headers, stream=True, timeout=30) as r:
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0))
         downloaded = 0
-        last_update = 0
-        frame_idx = 0
         with open(dest_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024 * 256):
                 if not chunk:
                     continue
                 f.write(chunk)
                 downloaded += len(chunk)
-                now = time.time()
-                # تحديث كل ~0.8 ثانية حتى تظهر حركة النسبة بوضوح
-                if now - last_update >= 0.8:
-                    last_update = now
-                    frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
-                    percent = (downloaded / total * 100) if total > 0 else None
-                    text = _progress_text(meta_caption, frame_idx, percent, downloaded)
-                    asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
+                state["downloaded"] = downloaded
+                state["percent"] = (downloaded / total * 100) if total > 0 else None
+    state["stage"] = "processing"  # لضمان ظهور "تم بنجاح" فور الانتهاء حتى لو كان سريعاً
     return dest_path
 
 
-def yt_dlp_download_with_progress(url, dest_template, loop, status_msg, meta_caption, audio_only=False):
-    """تنزيل حقيقي عبر yt-dlp (وليس رابط مباشر فقط) للحصول على نسبة تقدم صحيحة"""
-    state = {"last_update": 0, "frame": 0}
+def _locate_downloaded_file(info, ydl, audio_only):
+    """يحدد المسار الفعلي للملف الناتج بعد التحميل/الدمج، بدل الاعتماد فقط على
+    prepare_filename الذي قد يختلف عن الامتداد الحقيقي بعد دمج ffmpeg"""
+    # الطريقة الأدق: yt-dlp يسجل المسارات الفعلية في requested_downloads
+    requested = info.get("requested_downloads") or []
+    for item in requested:
+        fp = item.get("filepath") or item.get("_filename")
+        if fp and os.path.exists(fp):
+            return fp
+
+    # احتياطي: الاسم المتوقع كما هو
+    expected = ydl.prepare_filename(info)
+    if audio_only:
+        base, _ = os.path.splitext(expected)
+        expected = base + ".mp3"
+    if os.path.exists(expected):
+        return expected
+
+    # احتياطي أخير: ابحث عن أي ملف بنفس الاسم الأساسي (دون الامتداد) في مجلد التحميل
+    base_no_ext, _ = os.path.splitext(expected)
+    directory = os.path.dirname(base_no_ext) or "."
+    base_name = os.path.basename(base_no_ext)
+    if os.path.isdir(directory):
+        for fname in os.listdir(directory):
+            if fname.startswith(base_name):
+                return os.path.join(directory, fname)
+    return None
+
+
+def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
+    """تنزيل حقيقي عبر yt-dlp مع تحديث حالة التقدم في state (يشمل مرحلة المعالجة)"""
 
     def hook(d):
         if d.get("status") == "downloading":
-            now = time.time()
-            if now - state["last_update"] < 0.8:
-                return
-            state["last_update"] = now
-            state["frame"] = (state["frame"] + 1) % len(SPINNER_FRAMES)
-
+            state["stage"] = "downloading"
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             downloaded = d.get("downloaded_bytes", 0)
-
+            state["downloaded"] = downloaded
             if total:
-                # الحجم الكلي معروف -> نسبة دقيقة
-                percent = downloaded / total * 100
+                state["percent"] = downloaded / total * 100
             else:
-                # بعض المنصات (إنستغرام مثلاً) لا ترسل الحجم الكلي؛
-                # نحاول الاعتماد على عدد الأجزاء (fragments) إن وُجد
                 frag_idx = d.get("fragment_index")
                 frag_count = d.get("fragment_count")
                 if frag_idx is not None and frag_count:
-                    percent = frag_idx / frag_count * 100
+                    state["percent"] = frag_idx / frag_count * 100
                 else:
-                    percent = None  # سيتم عرض حجم البيانات بدل النسبة
-
-            text = _progress_text(meta_caption, state["frame"], percent, downloaded)
-            asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
+                    state["percent"] = None
         elif d.get("status") == "finished":
-            text = f"{meta_caption}\n\n⏳ جاري المعالجة..."
-            asyncio.run_coroutine_threadsafe(edit_progress_message(status_msg, text), loop)
+            # انتهى تنزيل البيانات الخام، قد يبدأ الآن دمج/تحويل عبر ffmpeg
+            state["stage"] = "processing"
 
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 20,
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "merge_output_format": "mp4",
         "progress_hooks": [hook],
     }
 
@@ -207,14 +255,13 @@ def yt_dlp_download_with_progress(url, dest_template, loop, status_msg, meta_cap
             "preferredquality": "192",
         }]
     else:
-        ydl_opts["format"] = "b/best"
+        # نفضّل ملف mp4 جاهز (فيديو+صوت في ملف واحد) لتفادي الحاجة لدمج ffmpeg قدر الإمكان
+        ydl_opts["format"] = "b[ext=mp4]/b/best"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        filepath = ydl.prepare_filename(info)
-        if audio_only:
-            base, _ = os.path.splitext(filepath)
-            filepath = base + ".mp3"
+        state["stage"] = "processing"
+        filepath = _locate_downloaded_file(info, ydl, audio_only)
         return filepath, info
 
 
@@ -296,14 +343,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     want_audio = query.data == "v_audio"
-    loop = asyncio.get_running_loop()
     chat_id = query.message.chat_id
     bot = context.bot
+    status_msg = None
 
     try:
         # 1️⃣ نفس منطق تيك توك الأصلي عبر TikWM API + إضافة الوصف والتقدم
         if "tiktok.com" in url:
-            data = await loop.run_in_executor(None, get_tiktok_data, url)
+            data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
             if not data:
                 await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
                 return
@@ -326,15 +373,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             ext = "mp3" if want_audio else "mp4"
             filename = f"{DOWNLOAD_DIR}/tt_{status_msg.message_id}.{ext}"
-            await loop.run_in_executor(
-                None, download_file_with_progress, direct_url, filename, loop, status_msg, meta_caption
+
+            state = {"stage": "downloading", "percent": None, "downloaded": 0}
+            await run_with_live_progress(
+                download_file_with_progress, (direct_url, filename, state), status_msg, meta_caption, state
             )
+
+            if not os.path.exists(filename):
+                raise RuntimeError("تعذر حفظ ملف تيك توك محلياً.")
+
             await send_final_file(bot, chat_id, status_msg, filename, meta_caption, is_audio=want_audio)
             return
 
         # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ) + الوصف والتقدم
         else:
-            info = await loop.run_in_executor(None, extract_info_only, url)
+            info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
             meta_caption = build_meta_caption(
                 uploader=info.get("uploader") or info.get("channel"),
                 duration=info.get("duration"),
@@ -346,19 +399,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg = await send_progress_placeholder(query, thumb, meta_caption)
 
             dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
-            filepath, _ = await loop.run_in_executor(
-                None, yt_dlp_download_with_progress, url, dest_template, loop, status_msg, meta_caption, want_audio
+            state = {"stage": "downloading", "percent": None, "downloaded": 0}
+            filepath, _ = await run_with_live_progress(
+                yt_dlp_download_with_progress, (url, dest_template, state, want_audio),
+                status_msg, meta_caption, state
             )
 
             if not filepath or not os.path.exists(filepath):
-                await status_msg.edit_caption(caption="❌ تعذر جلب المقطع، جرب رابطاً آخر.")
-                return
+                raise RuntimeError("تعذر العثور على الملف بعد التحميل، جرب رابطاً آخر.")
 
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=want_audio)
             return
 
     except Exception as e:
-        await query.edit_message_text(f"❌ **حدث خطأ:**\n`{str(e)[:150]}`", parse_mode='Markdown')
+        # نحذف رسالة الصورة دائماً عند حدوث خطأ حتى لا تبقى معلّقة، ثم نُرسل رسالة خطأ جديدة
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        try:
+            await bot.send_message(chat_id=chat_id, text=f"❌ **حدث خطأ:**\n`{str(e)[:150]}`", parse_mode='Markdown')
+        except Exception:
+            pass
 
 
 def main():
