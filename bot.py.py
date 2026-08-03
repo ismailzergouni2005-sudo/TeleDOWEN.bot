@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.request import HTTPXRequest
 import yt_dlp
 
-# 🌐 سيرفر وهمي صغير لفتح Port وإرضاء Render مجانياً
+# 🌐 سيرفر وهمي لفتح Port على Render
 app = Flask('')
 
 @app.route('/')
@@ -23,13 +23,10 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# تشغيل سيرفر الويب في خلفية النظام
 threading.Thread(target=run_web, daemon=True).start()
 
-# 🎯 مسار FFmpeg المباشر
+# 🎯 مسارات النظام
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-
-# 🍪 مسار ملف الكوكيز المطلق
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_PATH = os.path.join(BASE_DIR, 'www.youtube.com_cookies.txt')
 
@@ -41,27 +38,33 @@ logging.basicConfig(
 TOKEN = "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk"
 MAX_SIZE = 50 * 1024 * 1024  # 50MB
 
-COMMON_YDL_OPTS = {
-    'quiet': True,
-    'no_warnings': True,
-    'ffmpeg_location': FFMPEG_PATH,
-    'socket_timeout': 30,
-    'retries': 5,
-    'fragment_retries': 5,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'android', 'mweb', 'web']
+def get_ydl_opts(url: str, is_download=False):
+    """تجهيز الإعدادات بحسب المنصة لمنع تداخل الكوكيز"""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'ffmpeg_location': FFMPEG_PATH,
+        'socket_timeout': 30,
+        'retries': 5,
+        'fragment_retries': 5,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
         }
-    },
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
     }
-}
 
-if os.path.exists(COOKIE_PATH):
-    COMMON_YDL_OPTS['cookiefile'] = COOKIE_PATH
+    # تطبيق الكوكيز فقط إذا كان الرابط ليوتيوب
+    if "youtube.com" in url or "youtu.be" in url:
+        if os.path.exists(COOKIE_PATH):
+            opts['cookiefile'] = COOKIE_PATH
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android', 'mweb', 'web']
+            }
+        }
+    
+    return opts
 
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
@@ -137,14 +140,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loop = asyncio.get_event_loop()
 
     def extract_info():
-        opts = COMMON_YDL_OPTS.copy()
-        opts['format'] = 'best'  # إصلاح مرونة استخراج الجودات
+        opts = get_ydl_opts(url)
         opts['skip_download'] = True
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception:
-            return {}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
 
     try:
         info = await loop.run_in_executor(None, extract_info)
@@ -210,7 +209,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ انتهت صلاحية الطلب، يرجى إرسال الرابط مجدداً.")
         return
 
-    ydl_opts = COMMON_YDL_OPTS.copy()
+    ydl_opts = get_ydl_opts(url, is_download=True)
     ydl_opts['outtmpl'] = 'downloads/%(id)s.%(ext)s'
 
     is_audio = False
@@ -315,10 +314,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
         
         err_msg = str(e)
-        clean_err = "❌ تعذر تحميل المقطع من المنصة حالياً، يرجى المحاولة لاحقاً."
+        # طباعة الخطأ بشكل شفاف لمعرفة السبب تماماً
+        clean_err = f"❌ **خطأ أثناء التحميل:**\n`{err_msg[:120]}`"
         
         try:
-            await query.edit_message_text(clean_err, disable_web_page_preview=True)
+            await query.edit_message_text(clean_err, parse_mode='Markdown', disable_web_page_preview=True)
         except:
             pass
 
