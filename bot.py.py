@@ -44,6 +44,7 @@ COMMON_YDL_OPTS = {
     'socket_timeout': 30,
     'retries': 5,
     'fragment_retries': 5,
+    'cookiefile': 'www.youtube.com_cookies.txt',  # 🍪 مطابق لاسم الملف الخاص بك في GitHub
     'extractor_args': {
         'youtube': {
             'player_client': ['ios', 'android', 'web']
@@ -332,7 +333,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل الآن بشكل كامل خالي من الأخطاء...")
+    print("🚀 البوت يعمل الآن بنجاح...")
     app.run_polling()
 
 if __name__ == '__main__':
