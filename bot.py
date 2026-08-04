@@ -183,6 +183,11 @@ def build_reselect_keyboard():
 
 # ---------------- منطق التحميل والدمج مع الصوت ----------------
 
+TWITTER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+}
+
 def extract_info_only(url):
     ydl_opts = {
         "quiet": True,
@@ -190,9 +195,7 @@ def extract_info_only(url):
         "skip_download": True,
         "socket_timeout": 20,
         "retries": 2,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        },
+        "http_headers": TWITTER_HEADERS,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -217,9 +220,7 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 5,
         "progress_hooks": [hook],
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        },
+        "http_headers": TWITTER_HEADERS,
     }
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
@@ -366,20 +367,19 @@ def build_welcome_message(user):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
         f"أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
-        f"🌐 <b>المنصات المدعومة:</b>\n"
-        f"├ 🎵 <b>TikTok</b>\n"
-        f"├ 📸 <b>Instagram</b>\n"
-        f"├ ▶️ <b>YouTube</b>\n"
-        f"├ 📌 <b>Pinterest</b>\n"
-        f"├ 👍 <b>Facebook</b>\n"
-        f"└ 🐦 <b>X (Twitter)</b>\n\n"
+        f"🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
+        f"<code> ▌ T I K T O K </code>\n"
+        f"<code> ▌ I N S T A G R A M </code>\n"
+        f"<code> ▌ P I N T E R E S T </code>\n"
+        f"<code> ▌ F A C E B O O K </code>\n"
+        f"<code> ▌ X ( T W I T T E R ) </code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = build_welcome_message(update.effective_user)
     
-    # 1. إرسال الصورة الترحيبية عبر الرابط المباشر
     try:
         await update.message.reply_photo(
             photo=WELCOME_IMAGE_URL,
@@ -394,7 +394,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True
         )
     
-    # 2. إرسال الملصق المتحرك بعدها
     try:
         await update.message.reply_sticker(sticker=WELCOME_STICKER_ID)
     except Exception as e:
