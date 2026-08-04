@@ -271,25 +271,39 @@ def build_reselect_keyboard(lang):
         [InlineKeyboardButton(t["reselect"], callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل المعالج ----------------
+# ---------------- خيارات الهيدرز وتخطي الحظر ----------------
 
-HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+INSTAGRAM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Mode": "navigate",
 }
 
-def extract_info_only(url):
+def get_base_opts(url):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "skip_download": True,
         "socket_timeout": 15,
-        "retries": 2,
-        "http_headers": HTTP_HEADERS,
+        "retries": 5,
+        "fragment_retries": 5,
+        "concurrent_fragment_downloads": 10,
+        "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
+        "extractor_args": {
+            "instagram": {
+                "webpage_download": True
+            }
+        }
     }
     if os.path.exists("cookies.txt"):
         ydl_opts["cookiefile"] = "cookies.txt"
+    if FFMPEG_PATH:
+        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
+    return ydl_opts
 
+def extract_info_only(url):
+    ydl_opts = get_base_opts(url)
+    ydl_opts["skip_download"] = True
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -304,25 +318,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             if total:
                 state["percent"] = downloaded / total * 100
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "outtmpl": dest_template,
-        "socket_timeout": 15,
-        "retries": 3,
-        "fragment_retries": 3,
-        "concurrent_fragment_downloads": 10,
-        "progress_hooks": [hook],
-        "http_headers": HTTP_HEADERS,
-    }
+    ydl_opts = get_base_opts(url)
+    ydl_opts["outtmpl"] = dest_template
+    ydl_opts["progress_hooks"] = [hook]
 
-    if os.path.exists("cookies.txt"):
-        ydl_opts["cookiefile"] = "cookies.txt"
-
-    if FFMPEG_PATH:
-        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
-
-    # معالجة وضع الصوت
     if mode == "mp3":
         ydl_opts["format"] = "bestaudio/best"
         if FFMPEG_PATH:
@@ -331,7 +330,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }]
-    # معالجة وضع الفيديو وإجبار جلب الصوت معه دائماً
     elif height:
         ydl_opts["format"] = f"best[height<={height}][vcodec!=none][acodec!=none]/bestvideo[height<={height}]+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
@@ -517,7 +515,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
-            timeout=20
+            timeout=25
         )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
