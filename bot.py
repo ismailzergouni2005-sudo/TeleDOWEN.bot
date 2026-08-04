@@ -83,15 +83,23 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-def build_meta_caption(uploader=None, duration=None, views=None, title=None, quality=None):
+def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, quality=None):
     lines = []
+    
+    # اسم الحساب باللون الأزرق (رابط تفاعلي)
+    if uploader_id:
+        uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
+        lines.append(f"👤 الحساب: {uploader_link}")
+    elif uploader:
+        lines.append(f"👤 الحساب: <b>{uploader}</b>")
+    else:
+        lines.append("👤 الحساب: غير معروف")
+
     if title:
         title_clean = title.split('\n')[0]
         title_short = title_clean if len(title_clean) <= 50 else title_clean[:47] + "..."
         lines.append(f"📝 {title_short}")
         
-    lines.append(f"👤 الحساب: {uploader or 'غير معروف'}")
-    
     formatted_duration = format_duration(duration)
     if formatted_duration:
         lines.append(f"⏱ المدة: {formatted_duration}")
@@ -253,10 +261,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
 
 async def edit_progress_message(status_msg, text, reply_markup=None):
     try:
-        await status_msg.edit_caption(caption=text, reply_markup=reply_markup)
+        await status_msg.edit_caption(caption=text, reply_markup=reply_markup, parse_mode='HTML')
     except Exception:
         try:
-            await status_msg.edit_text(text, reply_markup=reply_markup)
+            await status_msg.edit_text(text, reply_markup=reply_markup, parse_mode='HTML')
         except Exception:
             pass
 
@@ -318,11 +326,13 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
             if is_audio:
                 await bot.send_audio(
                     chat_id=chat_id, audio=f, caption=caption,
+                    parse_mode='HTML',
                     reply_markup=build_reselect_keyboard(), read_timeout=180
                 )
             else:
                 await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption,
+                    parse_mode='HTML',
                     reply_markup=build_reselect_keyboard(), supports_streaming=True, read_timeout=180
                 )
     finally:
@@ -427,6 +437,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     meta_caption = build_meta_caption(
         uploader=info.get("uploader") or info.get("channel"),
+        uploader_id=info.get("uploader_id") or info.get("channel_id"),
         duration=info.get("duration"),
         views=info.get("view_count"),
         title=info.get("title"),
@@ -436,7 +447,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancel_event = asyncio.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
-    status_msg = await query.edit_message_text(f"{meta_caption}\n\n⏳ جاري بدء التحميل السريع...")
+    status_msg = await query.edit_message_text(f"{meta_caption}\n\n⏳ جاري بدء التحميل السريع...", parse_mode='HTML')
 
     chat_id = query.message.chat_id
     bot = context.bot
