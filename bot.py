@@ -8,7 +8,10 @@ from hydrogram import Client, filters
 from hydrogram.types import Message
 import yt_dlp
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # --- قراءة متغيرات البيئة ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -32,7 +35,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
 
-# --- خادم الويب لإبقاء Render شغالاً ---
+# --- خادم الويب لإبقاء Render حياً ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -44,8 +47,9 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"🌐 Web server running on port {port}")
+    logging.info(f"🌐 Web server started on port {port}")
 
+# --- وظائف التحميل والتنسيق ---
 def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
@@ -67,18 +71,20 @@ def download_video(url, dest_template):
         filename = ydl.prepare_filename(info)
         return filename, info
 
+# --- أوامر البوت ---
 @bot.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "⚡ **أهلاً بك في بوت التحميل السريع!**\n\n"
-        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك بدعم حجم يصل حتى **2GB**."
+        "أرسل لي أي رابط فيديو (TikTok, Instagram, YouTube, Facebook...) "
+        "وسأقوم بتحميله وإرساله لك كفيديو بدعم حجم يصل حتى **2GB**."
     )
 
 @bot.on_message(filters.text & ~filters.command(["start"]))
 async def handle_url(client: Client, message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.reply_text("❌ يرجى إرسال رابط صحيح.")
+        await message.reply_text("❌ يرجى إرسال رابط صحيح يبتدئ بـ http أو https.")
         return
 
     status_msg = await message.reply_text("⏳ جاري تحليل الرابط وبدء التحميل...")
@@ -110,17 +116,24 @@ async def handle_url(client: Client, message: Message):
         await status_msg.delete()
 
     except Exception as e:
-        logging.error("Download Error:", exc_info=True)
+        logging.error("Download/Upload Error:", exc_info=True)
         await status_msg.edit_text(f"❌ **حدث خطأ أثناء العملية:**\n`{str(e)[:150]}`")
     finally:
         if filepath and os.path.exists(filepath):
-            os.remove(filepath)
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
 
+# --- التشغيل الرئيسي ---
 async def main():
     await start_web_server()
     await bot.start()
-    logging.info("🚀 البوت يعمل بنجاح!")
-    await asyncio.Event().wait()
+    logging.info("🚀 البوت يعمل بنجاح ومستعد لاستقبال الرسائل!")
+    # استخدام idle() لإبقاء الاستماع للتحديثات مفاعلاً
+    from hydrogram import idle
+    await idle()
+    await bot.stop()
 
 if __name__ == '__main__':
     asyncio.run(main())
