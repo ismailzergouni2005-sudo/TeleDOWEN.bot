@@ -276,8 +276,6 @@ def build_reselect_keyboard(lang):
 INSTAGRAM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Sec-Fetch-Mode": "navigate",
 }
 
 def get_base_opts(url):
@@ -286,14 +284,7 @@ def get_base_opts(url):
         "no_warnings": True,
         "socket_timeout": 15,
         "retries": 5,
-        "fragment_retries": 5,
-        "concurrent_fragment_downloads": 10,
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
-        "extractor_args": {
-            "instagram": {
-                "webpage_download": True
-            }
-        }
     }
     if os.path.exists("cookies.txt"):
         ydl_opts["cookiefile"] = "cookies.txt"
@@ -322,20 +313,22 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     ydl_opts["outtmpl"] = dest_template
     ydl_opts["progress_hooks"] = [hook]
 
+    # إجبار اختيار صيغة تحتوي الصوت والصورة معاً مباشرة لتفادي الحاجة لـ FFmpeg
     if mode == "mp3":
-        ydl_opts["format"] = "bestaudio/best"
         if FFMPEG_PATH:
+            ydl_opts["format"] = "bestaudio/best"
             ydl_opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }]
+        else:
+            # إذا لم يوجد FFmpeg، استخرج أفضل ملف صوت مباشر بصيغته الأصيلة
+            ydl_opts["format"] = "ba/b"
     elif height:
-        ydl_opts["format"] = f"best[height<={height}][vcodec!=none][acodec!=none]/bestvideo[height<={height}]+bestaudio/best"
-        ydl_opts["merge_output_format"] = "mp4"
+        ydl_opts["format"] = f"b[height<={height}]/best[height<={height}]/bv*+ba/b"
     else:
-        ydl_opts["format"] = "best[vcodec!=none][acodec!=none]/bestvideo+bestaudio/best"
-        ydl_opts["merge_output_format"] = "mp4"
+        ydl_opts["format"] = "b/best/bv*+ba/b"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
