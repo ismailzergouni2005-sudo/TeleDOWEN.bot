@@ -6,17 +6,16 @@ import logging
 import asyncio
 import threading
 
-# --- تفعيل مكتبة static-ffmpeg لتجهيز المحول تلقائياً ---
+# --- تفعيل مكتبة static-ffmpeg تلقائياً ---
 import static_ffmpeg
 static_ffmpeg.add_paths()
-# ----------------------------------------------------
 
 from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import yt_dlp
 
-# --- إعداد خادم Flask لإبقاء البوت نشطاً على Render ---
+# --- إعداد خادم Flask للبقاء حياً على Render ---
 app = Flask('')
 
 @app.route('/')
@@ -46,7 +45,7 @@ except ValueError:
     logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط بدون حروف!")
     exit(1)
 
-# إنشاء جلسة العميل الخاصة بـ Pyrogram
+# إنشاء جلسة البوت
 bot = Client("my_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 DOWNLOAD_DIR = "downloads"
@@ -95,20 +94,17 @@ async def handle_url(client: Client, message: Message):
     filepath = None
 
     try:
-        # تشغيل التنزيل في مسار منفصل لمنع تجميد البوت
         loop = asyncio.get_running_loop()
         filepath, info = await loop.run_in_executor(None, download_video, url, dest_template)
         
         size_mb, size_str = format_file_size(filepath)
 
-        # التحقق من أن حجم الملف لا يتجاوز الحد الأقصى المطلق لتليجرام (2GB)
         if size_mb > 2000:
             await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز الحد الأقصى المسموح به في تليجرام (2000MB).**")
             return
 
         await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
 
-        # رفع الفيديو باستخدام Pyrogram لدعم حتى 2GB
         await client.send_video(
             chat_id=message.chat.id,
             video=filepath,
@@ -128,6 +124,11 @@ async def handle_url(client: Client, message: Message):
         if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
+# --- طريقة التشغيل المتوافقة مع Python 3.14 و asyncio الحديث ---
+async def start_bot():
+    await bot.start()
+    print("🚀 البوت يعمل بنجاح ومستعد لاستقبال الأوامر!")
+    await asyncio.Event().wait()
+
 if __name__ == '__main__':
-    print("🚀 جاري تشغيل البوت مع دعم الرفع حتى 2GB...")
-    bot.run()
+    asyncio.run(start_bot())
