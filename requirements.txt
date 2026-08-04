@@ -3,5 +3,6 @@ yt-dlp
 imageio-ffmpeg
 flask
 requests
-pyrofork
+git+https://github.com/TelegramEngine/PyroFork.git
 tgcrypto
+nest_asyncio
