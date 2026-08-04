@@ -29,11 +29,11 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# ⚠️ ضع الرابط المباشر لصورتك الخاصة هنا (من موقع Catbox أو ImgBB)
-WELCOME_IMAGE_URL = "https://files.catbox.moe/xxxxxx.png"
+# رابط الصورة الترحيبية المباشر من Catbox
+WELCOME_IMAGE_URL = "https://files.catbox.moe/heevbw.jpg"
 
-# معرف الملصق المتحرك الترحيبي
-WELCOME_STICKER_ID = "file:///C:/Users/user/Downloads/photo_2026-08-04_19-42-03.jpg"
+# معرف الملصق المتحرك الترحيبي الخاص بك
+WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -379,7 +379,7 @@ def build_welcome_message(user):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = build_welcome_message(update.effective_user)
     
-    # 1. إرسال الصورة الترحيبية
+    # 1. إرسال الصورة الترحيبية عبر الرابط المباشر
     try:
         await update.message.reply_photo(
             photo=WELCOME_IMAGE_URL,
