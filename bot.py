@@ -66,7 +66,7 @@ TEXTS = {
         "invalid_url": "❌ يرجى إرسال رابط صحيح.",
         "checking": "🔍 جاري فحص الرابط والجودات...",
         "choose_format": "👇 **اختر الصيغة والجودة المطلوبة:**",
-        "timeout": "⏱ استغرق فحص الرابط وقتاً طولاً. أعد المحاولة لاحقاً.",
+        "timeout": "⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.",
         "analyze_error": "❌ تعذر تحليل الرابط:\n`{error}`",
         "account": "👤 الحساب",
         "unknown": "غير معروف",
@@ -75,7 +75,7 @@ TEXTS = {
         "views": "👁 المشاهدات",
         "quality": "🎬 الجودة/الصيغة",
         "best_quality": "أفضل جودة متاحة",
-        "audio_only": "MP3 (صوت فقط)",
+        "audio_only": "🎵 MP3 (صوت فقط)",
         "instant": "⚡ أفضل جودة مباشرة",
         "cancel": "❌ إلغاء",
         "cancel_download": "🛑 إلغاء التحميل",
@@ -83,7 +83,7 @@ TEXTS = {
         "cancelled": "🛑 تم إلغاء عملية التحميل.",
         "expired": "❌ انتهت الجلسة، أرسل الرابط مجدداً.",
         "downloading": "⏳ جاري بدء التحميل...",
-        "processing": "جاري التحميل والمعالجة...",
+        "processing": "جاري التحميل والمعالجة السريعة...",
         "downloaded_mb": "تم تحميل {mb:.1f} MB...",
         "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد التحميل المسموح للبوتات هو 50MB.",
         "success": "✅ تم التحميل بنجاح!",
@@ -125,7 +125,7 @@ TEXTS = {
         "cancelled": "🛑 Download process cancelled.",
         "expired": "❌ Session expired, please send the link again.",
         "downloading": "⏳ Starting download...",
-        "processing": "Downloading and processing...",
+        "processing": "Fast downloading & processing...",
         "downloaded_mb": "Downloaded {mb:.1f} MB...",
         "too_large": "❌ **File size too large ({size})**.\nTelegram bot limit is 50MB.",
         "success": "✅ Downloaded successfully!",
@@ -271,7 +271,7 @@ def build_reselect_keyboard(lang):
         [InlineKeyboardButton(t["reselect"], callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل والدمج ----------------
+# ---------------- منطق التحميل السريع والمعالجة ----------------
 
 TWITTER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -283,7 +283,7 @@ def extract_info_only(url):
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "socket_timeout": 20,
+        "socket_timeout": 15,
         "retries": 2,
         "http_headers": TWITTER_HEADERS,
     }
@@ -305,37 +305,42 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
-        "concurrent_fragment_downloads": 5,
+        "socket_timeout": 15,
+        "retries": 2,
+        "fragment_retries": 2,
+        "concurrent_fragment_downloads": 10, # تسريع التحميل متعدد الأجزاء
         "progress_hooks": [hook],
         "http_headers": TWITTER_HEADERS,
     }
+
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if mode == "mp3":
         ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
+        if FFMPEG_PATH:
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
     elif height:
-        ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+        # جلب صيغ مدمجة بها الصوت والفيديو تلقائياً لتفادي تنزيل فيديو صامت
+        ydl_opts["format"] = f"best[height<={height}]/bestvideo[height<={height}]+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
     else:
-        ydl_opts["format"] = "bestvideo+bestaudio/best"
+        ydl_opts["format"] = "best/bestvideo+bestaudio"
         ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
 
+        # التعامل مع ملفات الصوت المخرجة
         if mode == "mp3":
             base, _ = os.path.splitext(filename)
-            filename = base + ".mp3"
+            if os.path.exists(base + ".mp3"):
+                filename = base + ".mp3"
 
         final_file = filename
         if not os.path.exists(final_file):
@@ -378,16 +383,16 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {t['processing']}\n{body}"
 
             now = time.time()
-            if text != last_text and (now - last_update) >= 2.0:
+            if text != last_text and (now - last_update) >= 1.5:
                 last_text = text
                 last_update = now
                 await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard(lang))
 
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=240):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=180):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang))
     start_time = time.time()
@@ -400,7 +405,7 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
             if time.time() - start_time > timeout:
                 cancel_event.set()
                 raise asyncio.TimeoutError("Download timeout.")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
         return await download_task
     finally:
         ticker.cancel()
@@ -449,7 +454,6 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang
 # ---------------- اختيار اللغة والأوامر الترحيبية ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # خيارات اختيار اللغة مع الأعلام
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🇩🇿 العربية", callback_data="lang_ar"),
@@ -507,7 +511,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
-            timeout=25
+            timeout=20
         )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
@@ -527,7 +531,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # معالجة اختيار اللغة
     if query.data in ["lang_ar", "lang_en"]:
         lang = "ar" if query.data == "lang_ar" else "en"
         context.user_data["lang"] = lang
@@ -633,7 +636,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error("حدث خطأ:", exc_info=context.error)
 
 def main():
-    request = HTTPXRequest(connect_timeout=20, read_timeout=120, write_timeout=120)
+    request = HTTPXRequest(connect_timeout=15, read_timeout=100, write_timeout=100)
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
