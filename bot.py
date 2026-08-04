@@ -86,7 +86,6 @@ def format_count(n):
 def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, description=None, quality=None):
     lines = []
     
-    # 1. رابط اسم الحساب باللون الأزرق
     if uploader_id:
         uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
         lines.append(f"👤 الحساب: {uploader_link}")
@@ -95,7 +94,6 @@ def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=Non
     else:
         lines.append("👤 الحساب: غير معروف")
 
-    # 2. عرض وصف الفيديو الأصلي مكان العنوان التلقائي
     text_content = description or title
     if text_content:
         clean_text = text_content.strip().split('\n')[0]
@@ -349,14 +347,20 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         except Exception:
             pass
 
-# ---------------- معالجات الأوامر ----------------
+# ---------------- معالجات الأوامر والرسالة الترحيبية ----------------
 
 def build_welcome_message(user):
     name = user.first_name or "صديقي"
+    
+    # يمكنك وضع الرموز العادية أو الرموز المتحركة عبر tg-emoji بشرط توفر المعرف (Custom Emoji ID)
     return (
-        f"👋 أهلاً بك <b>{name}</b> في بوت التحميل!\n\n"
-        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك مباشرة.\n\n"
-        "🌐 <b>المنصات المدعومة:</b> TikTok, Instagram, YouTube, X, Facebook وغيرها."
+        f"👋 أهلاً بك <b>{name}</b> في بوت التحميل المباشر!\n\n"
+        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك بالتنسيق والجودة المطلوبة.\n\n"
+        "🌐 <b>المنصات المدعومة:</b>\n"
+        "🎵 <b>TikTok</b> | 📸 <b>Instagram</b>\n"
+        "▶️ <b>YouTube</b> | 📌 <b>Pinterest</b>\n"
+        "👍 <b>Facebook</b> | 🐦 <b>X (Twitter)</b>\n\n"
+        "📎 أرسل الرابط هنا وسأتولى الباقي!"
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
