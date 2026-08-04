@@ -1,11 +1,9 @@
 import os
-import re
-import time
 import shutil
 import logging
 import asyncio
 
-# --- تفعيل مكتبة static-ffmpeg تلقائياً ---
+# --- تفعيل مكتبة static-ffmpeg ---
 import static_ffmpeg
 static_ffmpeg.add_paths()
 
@@ -17,10 +15,9 @@ import yt_dlp
 logging.basicConfig(level=logging.INFO)
 
 # --- قراءة متغيرات البيئة ---
-BOT_TOKEN = os.environ.get("8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
-API_HASH = os.environ.get("0276a0250c2cfc8a1dde70b0f9f92fcd")
-raw_api_id = os.environ.get("32087655
-")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_HASH = os.environ.get("API_HASH")
+raw_api_id = os.environ.get("API_ID")
 
 if not BOT_TOKEN or not API_HASH or not raw_api_id:
     logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render!")
@@ -32,7 +29,6 @@ except ValueError:
     logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط!")
     exit(1)
 
-# إنشاء جلسة البوت باستخدام Hydrogram
 bot = Client("my_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 DOWNLOAD_DIR = "downloads"
@@ -40,7 +36,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
 
-# --- خادم خفيف لإبقاء السيرفر حياً على Render ---
+# --- خادم الويب الخاص بـ Render ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -52,9 +48,8 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"🌐 Web server running on port {port}")
 
-# --- وظائف التنسيق والتحميل ---
+# --- وظائف التنزيل والرفع ---
 def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
@@ -76,12 +71,11 @@ def download_video(url, dest_template):
         filename = ydl.prepare_filename(info)
         return filename, info
 
-# --- أحداث البوت ---
 @bot.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "⚡ **أهلاً بك في بوت التحميل السريع!**\n\n"
-        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك كفيديو بدعم حجم يصل حتى **2GB**."
+        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك بدعم حجم يصل حتى **2GB**."
     )
 
 @bot.on_message(filters.text & ~filters.command(["start"]))
@@ -102,12 +96,11 @@ async def handle_url(client: Client, message: Message):
         size_mb, size_str = format_file_size(filepath)
 
         if size_mb > 2000:
-            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز الحد الأقصى المسموح به في تليجرام (2000MB).**")
+            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز حد 2000MB.**")
             return
 
         await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
 
-        # الرفع بواسطة Hydrogram لدعم حتى 2000MB (2GB) كفيديو
         await client.send_video(
             chat_id=message.chat.id,
             video=filepath,
@@ -121,17 +114,16 @@ async def handle_url(client: Client, message: Message):
         await status_msg.delete()
 
     except Exception as e:
-        logging.error("Download/Upload Error:", exc_info=True)
+        logging.error("Download Error:", exc_info=True)
         await status_msg.edit_text(f"❌ **حدث خطأ أثناء العملية:**\n`{str(e)[:150]}`")
     finally:
         if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
-# --- نقطة التشغيل ---
 async def main():
     await start_web_server()
     await bot.start()
-    logging.info("🚀 البوت يعمل بنجاح مع دعم الرفع حتى 2GB!")
+    logging.info("🚀 البوت يعمل بنجاح!")
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
