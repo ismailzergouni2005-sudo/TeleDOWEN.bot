@@ -5,6 +5,7 @@ import shutil
 import logging
 import asyncio
 import threading
+import subprocess
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -63,7 +64,7 @@ def format_duration(seconds):
         return "غير معروف"
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{m:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 def format_size(num_bytes):
     try:
@@ -145,7 +146,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل والتعديل لـ Pinterest ----------------
+# ---------------- منطق التحميل والضغط الحقيقي ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -160,6 +161,36 @@ def extract_info_only(url):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
+
+def compress_video(input_path, target_height):
+    """إعادة ضغط الفيديو فعلياً وتصغير المقاس الحجم عبر FFmpeg Direct"""
+    if not FFMPEG_PATH or not os.path.exists(input_path):
+        return input_path
+
+    compressed_path = input_path.replace(".mp4", f"_{target_height}p.mp4")
+    
+    # أمر ffmpeg لإعادة القياس وضغط الفيديو بحجم أصفر
+    cmd = [
+        FFMPEG_PATH, "-y",
+        "-i", input_path,
+        "-vf", f"scale=-2:'min({target_height},ih)'",
+        "-c:v", "libx264",
+        "-crf", "28",
+        "-preset", "faster",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        compressed_path
+    ]
+    
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        if os.path.exists(compressed_path) and os.path.getsize(compressed_path) > 0:
+            os.remove(input_path)
+            return compressed_path
+    except Exception as e:
+        logging.error(f"Compression error: {e}")
+    
+    return input_path
 
 def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="video", height=None):
     def hook(d):
@@ -197,15 +228,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
         ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/bestvideo+bestaudio/best"
-        # إعادة ضغط الفيديو وتغيير مقاسه تلقائياً لتقليل الحجم
-        if FFMPEG_PATH:
-            ydl_opts["postprocessors"] = [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }]
-            ydl_opts["postprocessor_args"] = {
-                'videoconvertor': ['-vf', f'scale=-2:{height}', '-crf', '28']
-            }
     else:
         ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
 
@@ -217,17 +239,21 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             base, _ = os.path.splitext(filename)
             filename = base + ".mp3"
             
-        if os.path.exists(filename):
-            return filename, info
+        final_file = filename
+        if not os.path.exists(final_file):
+            base_no_ext, _ = os.path.splitext(filename)
+            directory = os.path.dirname(base_no_ext) or "."
+            base_name = os.path.basename(base_no_ext)
+            for fname in os.listdir(directory):
+                if fname.startswith(base_name):
+                    final_file = os.path.join(directory, fname)
+                    break
 
-        base_no_ext, _ = os.path.splitext(filename)
-        directory = os.path.dirname(base_no_ext) or "."
-        base_name = os.path.basename(base_no_ext)
-        for fname in os.listdir(directory):
-            if fname.startswith(base_name):
-                return os.path.join(directory, fname), info
-                
-        return filename, info
+        # 🎬 تطبيق الضغط الحقيقي إذا كان الخيار فيديو محدد الارتفاع (مثلاً 480p, 720p)
+        if mode == "video" and height and final_file.endswith(".mp4"):
+            final_file = compress_video(final_file, height)
+
+        return final_file, info
 
 # ---------------- إدارة البث المباشر والتقدم ----------------
 
@@ -254,7 +280,7 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
                 mb = (state.get("downloaded") or 0) / (1024 * 1024)
                 body = f"تم تحميل {mb:.1f} MB..."
             
-            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل المباشر السريع...\n{body}"
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل والمعالجة...\n{body}"
             
             now = time.time()
             if text != last_text and (now - last_update) >= 2.0:
@@ -287,7 +313,7 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
     size_label = format_size(os.path.getsize(filepath)) if os.path.exists(filepath) else None
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
     if size_label:
-        caption += f"\n📦 الحجم: {size_label}"
+        caption += f"\n📦 الحجم النهائي: {size_label}"
 
     try:
         with open(filepath, "rb") as f:
@@ -439,7 +465,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل وجاهز لمعالجة وإعادة ضغط الفيديوهات...")
+    print("🚀 البوت يعمل وجاهز لمعالجة وإعادة ضغط مقاطع انستغرام وبنترست...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
