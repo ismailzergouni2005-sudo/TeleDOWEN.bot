@@ -4,6 +4,7 @@ import time
 import logging
 import asyncio
 import threading
+import subprocess
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,13 +26,19 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 logging.basicConfig(level=logging.INFO)
-TOKEN = "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk"
+
+# ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # رموز دائرة الانتظار المتحركة
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+
+# قوائم الجودات المدعومة (تطابق الأزرار المطلوبة)
+VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
+AUDIO_BITRATES = [128, 64]
 
 
 def clean_url(url: str) -> str:
@@ -85,6 +92,25 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
     return "\n".join(lines)
 
 
+# ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
+
+def build_quality_keyboard():
+    """يبني لوحة أزرار الجودات على شكل شبكة 3x2 للفيديو + صف لبتريت الصوت،
+    بنفس شكل اللقطة المرفقة (1080p/720p/480p/360p/240p/144p + 128kbps/64kbps)"""
+    rows = []
+    for i in range(0, len(VIDEO_QUALITIES), 3):
+        chunk = VIDEO_QUALITIES[i:i + 3]
+        rows.append([
+            InlineKeyboardButton(f"🎬 {q}p", callback_data=f"q_{q}") for q in chunk
+        ])
+    rows.append([
+        InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
+    ])
+    rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
+    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ---------------- تيك توك (نفس منطق TikWM الأصلي) ----------------
 
 def get_tiktok_data(tiktok_url):
@@ -101,20 +127,18 @@ def get_tiktok_data(tiktok_url):
     return None
 
 
-def download_tiktok_fast(tiktok_url):
-    """محفوظة للتوافق: ترجع رابط الفيديو المباشر فقط (نفس السلوك القديم)"""
-    data = get_tiktok_data(tiktok_url)
-    if data:
+def tiktok_url_for_height(data, height):
+    """تيك توك عبر TikWM لا يوفر أحجاماً دقيقة (فقط HD/SD)،
+    لذا نربط الجودات العليا بـ hdplay والدنيا بـ play كأقرب مطابقة متاحة"""
+    if height >= 480:
         return data.get("hdplay") or data.get("play")
-    return None
+    return data.get("play") or data.get("hdplay")
 
 
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
 
 def get_direct_video_url(url):
-    """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً.
-    هذا يجعل الإرسال فورياً لأن تيليجرام نفسه يجلب الفيديو من رابطه (بسرعة عالية)
-    بدل أن يُنزّله سيرفرنا ثم يعيد رفعه (وهذا ما كان يسبب البطء الشديد)."""
+    """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً."""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -140,8 +164,6 @@ def get_direct_video_url(url):
 
 
 # ---------------- تنزيل الملف مع تتبع نسبة التقدم الحقيقية (مؤشر حي مستمر) ----------------
-# ملاحظة: هذا المسار (تنزيل محلي كامل) يُستخدم فقط عند طلب "الصوت فقط"،
-# لأن استخراج الصوت عبر ffmpeg يتطلب وجود الملف محلياً، ولا مفر من ذلك.
 
 async def edit_progress_message(status_msg, text):
     try:
@@ -154,7 +176,6 @@ async def edit_progress_message(status_msg, text):
 
 
 def _progress_body(state):
-    """يبني نص جسم الرسالة حسب المرحلة الحالية (تحميل / معالجة)"""
     stage = state.get("stage", "downloading")
     if stage == "processing":
         return "جاري معالجة الفيديو..."
@@ -166,8 +187,6 @@ def _progress_body(state):
 
 
 async def progress_ticker(status_msg, meta_caption, state):
-    """مهمة تعمل باستمرار (كل ثانية تقريباً) لتحديث الرسالة بشكل حي،
-    تعمل من داخل الحلقة الرئيسية مباشرة (بدون قفزات بين الخيوط)"""
     frame = 0
     last_text = None
     try:
@@ -184,7 +203,6 @@ async def progress_ticker(status_msg, meta_caption, state):
 
 
 async def run_with_live_progress(func, args, status_msg, meta_caption, state):
-    """يشغّل دالة تحميل (blocking) في executor مع مؤشر تقدّم حي بالتوازي"""
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state))
     try:
@@ -213,21 +231,33 @@ def download_file_with_progress(direct_url, dest_path, state):
                 downloaded += len(chunk)
                 state["downloaded"] = downloaded
                 state["percent"] = (downloaded / total * 100) if total > 0 else None
-    state["stage"] = "processing"  # لضمان ظهور "تم بنجاح" فور الانتهاء حتى لو كان سريعاً
+    state["stage"] = "processing"
     return dest_path
 
 
+def convert_audio_bitrate(input_path, output_path, bitrate_kbps):
+    """يحوّل ملف صوتي إلى بتريت محدد عبر ffmpeg (يُستخدم لتيك توك حيث
+    لا يوفر TikWM خيارات بتريت مباشرة)"""
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", input_path,
+            "-b:a", f"{bitrate_kbps}k",
+            "-vn", output_path,
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return output_path
+
+
 def _locate_downloaded_file(info, ydl, audio_only):
-    """يحدد المسار الفعلي للملف الناتج بعد التحميل/الدمج، بدل الاعتماد فقط على
-    prepare_filename الذي قد يختلف عن الامتداد الحقيقي بعد دمج ffmpeg"""
-    # الطريقة الأدق: yt-dlp يسجل المسارات الفعلية في requested_downloads
     requested = info.get("requested_downloads") or []
     for item in requested:
         fp = item.get("filepath") or item.get("_filename")
         if fp and os.path.exists(fp):
             return fp
 
-    # احتياطي: الاسم المتوقع كما هو
     expected = ydl.prepare_filename(info)
     if audio_only:
         base, _ = os.path.splitext(expected)
@@ -235,7 +265,6 @@ def _locate_downloaded_file(info, ydl, audio_only):
     if os.path.exists(expected):
         return expected
 
-    # احتياطي أخير: ابحث عن أي ملف بنفس الاسم الأساسي (دون الامتداد) في مجلد التحميل
     base_no_ext, _ = os.path.splitext(expected)
     directory = os.path.dirname(base_no_ext) or "."
     base_name = os.path.basename(base_no_ext)
@@ -246,8 +275,10 @@ def _locate_downloaded_file(info, ydl, audio_only):
     return None
 
 
-def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
-    """تنزيل حقيقي عبر yt-dlp مع تحديث حالة التقدم في state (يشمل مرحلة المعالجة)"""
+def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, height=None, bitrate=None):
+    """تنزيل حقيقي عبر yt-dlp مع تحديث حالة التقدم في state.
+    height: أقصى ارتفاع فيديو مطلوب (1080/720/480/360/240/144) عند تحديد جودة معيّنة.
+    bitrate: بتريت الصوت المطلوب (128/64) عند تحميل صوت فقط."""
 
     def hook(d):
         if d.get("status") == "downloading":
@@ -265,7 +296,6 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
                 else:
                     state["percent"] = None
         elif d.get("status") == "finished":
-            # انتهى تنزيل البيانات الخام، قد يبدأ الآن دمج/تحويل عبر ffmpeg
             state["stage"] = "processing"
 
     ydl_opts = {
@@ -290,10 +320,16 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
         ydl_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
-            "preferredquality": "192",
+            "preferredquality": str(bitrate) if bitrate else "192",
         }]
+    elif height:
+        # نطلب أفضل نسخة لا يتجاوز ارتفاعها القيمة المطلوبة، مع بديل دمج فيديو+صوت
+        ydl_opts["format"] = (
+            f"best[height<={height}][ext=mp4]/"
+            f"bestvideo[height<={height}]+bestaudio/"
+            f"best[height<={height}]"
+        )
     else:
-        # نفضّل ملف mp4 جاهز (فيديو+صوت في ملف واحد) لتفادي الحاجة لدمج ffmpeg قدر الإمكان
         ydl_opts["format"] = "b[ext=mp4]/b/best"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -304,7 +340,6 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False):
 
 
 def extract_info_only(url):
-    """جلب معلومات الفيديو فقط (بدون تنزيل) للحصول على الصورة المصغرة والوصف"""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -338,16 +373,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = clean_url(url_match.group(0))
     context.user_data['download_url'] = url
 
-    keyboard = [
-        [InlineKeyboardButton("⚡ تحميل الفيديو", callback_data="v_instant")],
-        [InlineKeyboardButton("🎵 تحميل الصوت فقط", callback_data="v_audio")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")]
-    ]
-    await update.message.reply_text("👇 **اختر التحميل:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await update.message.reply_text(
+        "👇 **اختر الجودة:**", reply_markup=build_quality_keyboard(), parse_mode='Markdown'
+    )
 
 
 async def send_progress_placeholder(query, thumb_url, meta_caption):
-    """إرسال صورة مصغرة من الفيديو مع نص يحتوي الوصف ونسبة تقدم 0%"""
     text = f"{meta_caption}\n\n{SPINNER_FRAMES[0]} جاري التحميل...\n{build_progress_bar(0)}"
     if thumb_url:
         try:
@@ -360,7 +391,6 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
 
 
 async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None):
-    """يرسل الفيديو مباشرة عبر رابطه لتيليجرام (بدون تنزيل/رفع من عندنا) -> سريع جداً"""
     caption = f"{meta_caption}\n\n✅ تم الإرسال بنجاح!"
 
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
@@ -383,7 +413,6 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
 
 
 async def _sending_ticker(status_msg, meta_caption):
-    """مؤشر بسيط أثناء انتظار جلب تيليجرام للفيديو من رابطه (عادة ثوانٍ قليلة فقط)"""
     frame = 0
     try:
         while True:
@@ -396,8 +425,6 @@ async def _sending_ticker(status_msg, meta_caption):
 
 
 async def upload_ticker(status_msg, meta_caption):
-    """يعرض مؤشراً حياً وصادقاً أثناء الرفع (عدّاد وقت فعلي + دائرة متحركة)،
-    بدون نسبة مئوية وهمية لأن تيليجرام لا يوفر نسبة رفع حقيقية عبر الـ API"""
     frame = 0
     start = time.time()
     try:
@@ -414,7 +441,6 @@ async def upload_ticker(status_msg, meta_caption):
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
 
-    # نُبقي رسالة الصورة ظاهرة مع عدّاد وقت حي طوال مدة الرفع، لتفادي أي تجمّد أو فراغ
     ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption))
     try:
         with open(filepath, "rb") as f:
@@ -437,11 +463,123 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         if os.path.exists(filepath):
             os.remove(filepath)
 
-    # نحذف رسالة الصورة فقط بعد ظهور الفيديو فعلياً -> لا يوجد فراغ بينهما
     try:
         await status_msg.delete()
     except Exception:
         pass
+
+
+async def handle_tiktok_video_quality(query, context, url, height, chat_id, bot):
+    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+    if not data:
+        await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+        return
+
+    author = data.get("author", {}) or {}
+    meta_caption = build_meta_caption(
+        uploader=author.get("nickname") or author.get("unique_id"),
+        duration=data.get("duration"),
+        views=data.get("play_count"),
+        title=data.get("title"),
+    )
+    thumb = data.get("origin_cover") or data.get("cover")
+    direct_url = tiktok_url_for_height(data, height)
+    if not direct_url:
+        await query.edit_message_text("❌ تعذر جلب الرابط المباشر لهذه الجودة.")
+        return
+
+    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+    await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
+
+
+async def handle_tiktok_audio_bitrate(query, context, url, bitrate, chat_id, bot):
+    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+    if not data:
+        await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+        return
+
+    author = data.get("author", {}) or {}
+    meta_caption = build_meta_caption(
+        uploader=author.get("nickname") or author.get("unique_id"),
+        duration=data.get("duration"),
+        views=data.get("play_count"),
+        title=data.get("title"),
+    )
+    thumb = data.get("origin_cover") or data.get("cover")
+    direct_url = data.get("music")
+    if not direct_url:
+        await query.edit_message_text("❌ تعذر جلب رابط الصوت.")
+        return
+
+    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+    raw_path = f"{DOWNLOAD_DIR}/tt_raw_{status_msg.message_id}.mp3"
+    final_path = f"{DOWNLOAD_DIR}/tt_{bitrate}k_{status_msg.message_id}.mp3"
+
+    state = {"stage": "downloading", "percent": None, "downloaded": 0}
+    await run_with_live_progress(
+        download_file_with_progress, (direct_url, raw_path, state), status_msg, meta_caption, state
+    )
+
+    if not os.path.exists(raw_path):
+        raise RuntimeError("تعذر حفظ ملف الصوت محلياً.")
+
+    state["stage"] = "processing"
+    await asyncio.get_running_loop().run_in_executor(
+        None, convert_audio_bitrate, raw_path, final_path, bitrate
+    )
+    if os.path.exists(raw_path):
+        os.remove(raw_path)
+
+    await send_final_file(bot, chat_id, status_msg, final_path, meta_caption, is_audio=True)
+
+
+async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
+    await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
+    info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+    meta_caption = build_meta_caption(
+        uploader=info.get("uploader") or info.get("channel"),
+        duration=info.get("duration"),
+        views=info.get("view_count"),
+        title=info.get("title"),
+    )
+    thumb = info.get("thumbnail")
+
+    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+    dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
+    state = {"stage": "downloading", "percent": None, "downloaded": 0}
+    filepath, _ = await run_with_live_progress(
+        yt_dlp_download_with_progress, (url, dest_template, state, False, height, None),
+        status_msg, meta_caption, state
+    )
+
+    if not filepath or not os.path.exists(filepath):
+        raise RuntimeError("تعذر العثور على الملف بهذه الجودة، جرب جودة أخرى.")
+
+    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
+
+
+async def handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot):
+    info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+    meta_caption = build_meta_caption(
+        uploader=info.get("uploader") or info.get("channel"),
+        duration=info.get("duration"),
+        views=info.get("view_count"),
+        title=info.get("title"),
+    )
+    thumb = info.get("thumbnail")
+
+    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+    dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
+    state = {"stage": "downloading", "percent": None, "downloaded": 0}
+    filepath, _ = await run_with_live_progress(
+        yt_dlp_download_with_progress, (url, dest_template, state, True, None, bitrate),
+        status_msg, meta_caption, state
+    )
+
+    if not filepath or not os.path.exists(filepath):
+        raise RuntimeError("تعذر العثور على الملف بعد التحميل، جرب رابطاً آخر.")
+
+    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=True)
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,66 +595,54 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ انتهت الجلسة، أرسل الرابط مجدداً.")
         return
 
-    want_audio = query.data == "v_audio"
     chat_id = query.message.chat_id
     bot = context.bot
     status_msg = None
+    is_tiktok = "tiktok.com" in url
 
     try:
-        # 1️⃣ نفس منطق تيك توك الأصلي عبر TikWM API
-        if "tiktok.com" in url:
-            data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-            if not data:
-                await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-                return
+        # 🎬 جودة فيديو محددة (1080/720/480/360/240/144)
+        if query.data.startswith("q_"):
+            height = int(query.data.split("_")[1])
+            if is_tiktok:
+                await handle_tiktok_video_quality(query, context, url, height, chat_id, bot)
+            else:
+                await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
+            return
 
-            author = data.get("author", {}) or {}
-            meta_caption = build_meta_caption(
-                uploader=author.get("nickname") or author.get("unique_id"),
-                duration=data.get("duration"),
-                views=data.get("play_count"),
-                title=data.get("title"),
-            )
-            thumb = data.get("origin_cover") or data.get("cover")
+        # 🎵 بتريت صوت محدد (128/64)
+        if query.data.startswith("a_"):
+            bitrate = int(query.data.split("_")[1])
+            if is_tiktok:
+                await handle_tiktok_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+            else:
+                await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+            return
 
-            if not want_audio:
-                # ⚡ فيديو: إرسال فوري عبر الرابط المباشر (بدون تنزيل/رفع من عندنا) -> سريع
+        # ⚡ المسار السريع الأصلي: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
+        if query.data == "v_instant":
+            if is_tiktok:
+                data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+                if not data:
+                    await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+                    return
+                author = data.get("author", {}) or {}
+                meta_caption = build_meta_caption(
+                    uploader=author.get("nickname") or author.get("unique_id"),
+                    duration=data.get("duration"),
+                    views=data.get("play_count"),
+                    title=data.get("title"),
+                )
+                thumb = data.get("origin_cover") or data.get("cover")
                 direct_url = data.get("hdplay") or data.get("play")
                 if not direct_url:
                     await query.edit_message_text("❌ تعذر جلب الرابط المباشر.")
                     return
-
                 status_msg = await send_progress_placeholder(query, thumb, meta_caption)
                 await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
                 return
-
-            # 🎵 صوت فقط: يتطلب تنزيلاً محلياً (لا بديل عنه)
-            direct_url = data.get("music")
-            if not direct_url:
-                await query.edit_message_text("❌ تعذر جلب رابط الصوت.")
-                return
-
-            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-            filename = f"{DOWNLOAD_DIR}/tt_{status_msg.message_id}.mp3"
-
-            state = {"stage": "downloading", "percent": None, "downloaded": 0}
-            await run_with_live_progress(
-                download_file_with_progress, (direct_url, filename, state), status_msg, meta_caption, state
-            )
-
-            if not os.path.exists(filename):
-                raise RuntimeError("تعذر حفظ ملف الصوت محلياً.")
-
-            await send_final_file(bot, chat_id, status_msg, filename, meta_caption, is_audio=True)
-            return
-
-        # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ)
-        else:
-            # تحديث فوري حتى لا تبقى الرسالة بلا رد أثناء انتظار معلومات الفيديو
-            await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
-
-            if not want_audio:
-                # ⚡ فيديو: نجلب الرابط المباشر فقط (بدون تنزيل) ثم نرسله فوراً لتيليجرام -> سريع
+            else:
+                await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
                 direct_url, info = await asyncio.get_running_loop().run_in_executor(
                     None, get_direct_video_url, url
                 )
@@ -527,42 +653,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     title=info.get("title"),
                 )
                 thumb = info.get("thumbnail")
-
                 if not direct_url:
                     await query.edit_message_text("❌ تعذر جلب رابط الفيديو المباشر، جرب رابطاً آخر.")
                     return
-
                 status_msg = await send_progress_placeholder(query, thumb, meta_caption)
                 await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
                 return
 
-            # 🎵 صوت فقط: يتطلب تنزيلاً محلياً + استخراج عبر ffmpeg (لا بديل عنه)
-            info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
-            meta_caption = build_meta_caption(
-                uploader=info.get("uploader") or info.get("channel"),
-                duration=info.get("duration"),
-                views=info.get("view_count"),
-                title=info.get("title"),
-            )
-            thumb = info.get("thumbnail")
-
-            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-
-            dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
-            state = {"stage": "downloading", "percent": None, "downloaded": 0}
-            filepath, _ = await run_with_live_progress(
-                yt_dlp_download_with_progress, (url, dest_template, state, True),
-                status_msg, meta_caption, state
-            )
-
-            if not filepath or not os.path.exists(filepath):
-                raise RuntimeError("تعذر العثور على الملف بعد التحميل، جرب رابطاً آخر.")
-
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=True)
-            return
-
     except Exception as e:
-        # نحذف رسالة الصورة دائماً عند حدوث خطأ حتى لا تبقى معلّقة، ثم نُرسل رسالة خطأ جديدة
         if status_msg is not None:
             try:
                 await status_msg.delete()
@@ -575,8 +673,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    # مهلات أطول لأن رفع ملفات فيديو كبيرة قد يستغرق دقائق
-    # + زيادة عدد الاتصالات المتزامنة (pool) حتى لا تتزاحم طلبات تحديث الرسالة مع طلب الرفع نفسه ويبطئه
     request = HTTPXRequest(
         connect_timeout=30,
         read_timeout=180,
