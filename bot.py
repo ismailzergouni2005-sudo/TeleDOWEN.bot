@@ -28,14 +28,23 @@ threading.Thread(target=run_web, daemon=True).start()
 
 logging.basicConfig(level=logging.INFO)
 
-# ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+# ⚠️ التوكن يُقرأ حصراً من متغير بيئة الآن — لا يوجد أي قيمة افتراضية مكتوبة
+# داخل الكود. إذا كان التوكن القديم قد ظهر لأي شخص آخر (مثلاً تم مشاركة هذا
+# الملف)، يجب اعتباره مخترقاً: اذهب إلى @BotFather ونفّذ /revoke لإصدار
+# توكن جديد، ثم ضع التوكن الجديد فقط في متغيرات البيئة على Render.
+TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError(
+        "❌ لم يتم تعيين متغير البيئة BOT_TOKEN. "
+        "أضفه من إعدادات Environment Variables على Render قبل التشغيل."
+    )
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # 🎞️ فحص توفر ffmpeg على السيرفر (مطلوب لدمج فيديو+صوت لمصادر مثل إنستغرام
-# التي تفصل الفيديو عن الصوت في صيغ منفصلة بدون رابط مباشر مدمج جاهز).
+# التي تفصل الفيديو عن الصوت في صيغ منفصلة بدون رابط مباشر مدمج جاهز،
+# وأيضاً مطلوب لاستخراج mp3 حقيقي عند اختيار تحميل الصوت فقط).
 FFMPEG_PATH = shutil.which("ffmpeg")
 if not FFMPEG_PATH:
     # على استضافات مثل Render غالباً ما يكون apt-get غير متاح بدون صلاحيات root،
@@ -51,7 +60,8 @@ FFMPEG_AVAILABLE = FFMPEG_PATH is not None
 if not FFMPEG_AVAILABLE:
     logging.warning(
         "⚠️ ffmpeg غير متاح على هذا السيرفر — سيتم تعطيل خيارات الجودة التي "
-        "تحتاج دمج فيديو+صوت (مثل جودات إنستغرام)، وسيبقى فقط زر الإرسال الفوري. "
+        "تحتاج دمج فيديو+صوت (مثل جودات إنستغرام) وكذلك أزرار تحميل الصوت "
+        "(تحتاج استخراج mp3 حقيقي)، وسيبقى فقط زر الإرسال الفوري. "
         "لتفعيلها: pip install imageio-ffmpeg"
     )
 else:
@@ -162,7 +172,10 @@ def get_direct_quality_map(info):
 
 def get_direct_audio_map(info):
     """نفس الفكرة للصوت فقط: صيغ صوتية جاهزة (vcodec=none) برابط مباشر،
-    مصنّفة حسب البتريت الحقيقي المتوفر فعلاً."""
+    مصنّفة حسب البتريت الحقيقي المتوفر فعلاً.
+    ملاحظة: هذه الخريطة لم تعد تُستخدم لإرسال مباشر للصوت (انظر button_callback)
+    لأن حاويات الصوت من مصادر مثل إنستغرام غالباً mp4 ويعاملها تيليجرام
+    كملف/فيديو عام بدل مشغل صوت عند إرسالها كرابط خارجي."""
     formats = info.get("formats") or []
     audio_map = {}
     for f in formats:
@@ -197,7 +210,9 @@ def get_merge_only_heights(info, exclude_heights):
 def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=None):
     """لوحة جودات مبنية من الجودات الحقيقية المتاحة:
     - heights: روابط مباشرة جاهزة (مرحلة واحدة، فورية).
-    - merge_heights: تحتاج تحميل فيديو+صوت منفصلين ثم دمج بـ ffmpeg (مرحلتين، أبطأ)."""
+    - merge_heights: تحتاج تحميل فيديو+صوت منفصلين ثم دمج بـ ffmpeg (مرحلتين، أبطأ).
+    - bitrates: أزرار الصوت تُعرض فقط إذا ffmpeg متاح، لأن تحميل الصوت
+      يمرّ إلزامياً عبر استخراج mp3 حقيقي (انظر handle_ytdlp_audio_bitrate)."""
     rows = []
     if heights:
         capped = heights[:6]
@@ -211,7 +226,7 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
         for i in range(0, len(buttons), 3):
             rows.append(buttons[i:i + 3])
 
-    if bitrates:
+    if bitrates and FFMPEG_AVAILABLE:
         rows.append([
             InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in bitrates[:2]
         ])
@@ -219,10 +234,6 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
     rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
-
-
-
-
 
 
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
@@ -373,6 +384,9 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if audio_only:
+        # ✅ استخراج mp3 حقيقي عبر ffmpeg بدل إرسال رابط CDN خارجي كصوت.
+        # هذا هو المسار الذي يضمن وصول الملف كصوت قابل للتشغيل في تيليجرام،
+        # لا كملف/فيديو عام (راجع شرح المشكلة في button_callback).
         ydl_opts["format"] = "bestaudio/best"
         ydl_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -720,23 +734,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
-        # 🎵 بتريت صوت محدد — إرسال مباشر بمرحلة واحدة أيضاً
+        # 🎵 بتريت صوت محدد — نمرّ دائماً عبر تحميل + استخراج mp3 حقيقي بـ ffmpeg.
+        # لا نستخدم الرابط المباشر (direct_audio_map) هنا: حاويات الصوت من
+        # مصادر مثل إنستغرام غالباً mp4، وتيليجرام يعامل الرابط الخارجي حسب
+        # نوعه الحقيقي فيرسله كملف/فيديو عام بدل مشغل صوت. الحل هو تحميل
+        # الصوت محلياً وتحويله فعلياً إلى mp3 قبل رفعه.
         if query.data.startswith("a_"):
-            bitrate = int(query.data.split("_")[1])
-            entry = (context.user_data.get('direct_audio_map') or {}).get(bitrate)
-            if not entry:
-                await query.edit_message_text("❌ انتهت صلاحية هذا البتريت، أرسل الرابط مجدداً.")
+            if not FFMPEG_AVAILABLE:
+                await query.edit_message_text("❌ تحميل الصوت يحتاج ffmpeg غير مثبت على السيرفر حالياً.")
                 return
-            info = context.user_data.get('ytdlp_info') or {}
-            meta_caption = build_meta_caption(
-                uploader=info.get("uploader") or info.get("channel"),
-                duration=info.get("duration"),
-                views=info.get("view_count"),
-                title=info.get("title"),
-            )
-            thumb = info.get("thumbnail")
-            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-            await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, thumb, is_audio=True)
+            bitrate = int(query.data.split("_")[1])
+            await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
             return
 
         # ⚡ المسار السريع: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
