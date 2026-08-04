@@ -266,14 +266,18 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=300):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event))
+    start_time = time.time()
     try:
         download_task = loop.run_in_executor(None, func, *args)
         while not download_task.done():
             if cancel_event.is_set():
                 raise asyncio.CancelledError("تم الإلغاء.")
+            if time.time() - start_time > timeout:
+                cancel_event.set()
+                raise asyncio.TimeoutError("انتهت المهلة الزمنية للتحميل.")
             await asyncio.sleep(0.5)
         return await download_task
     finally:
@@ -323,7 +327,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     checking_msg = await update.message.reply_text("🔍 جاري جلب الجودات والصيغ المتاحة...")
     try:
-        info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+        info = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
+            timeout=45
+        )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
         context.user_data['video_opts'] = video_opts
@@ -333,7 +340,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=build_quality_keyboard(video_opts),
             parse_mode='Markdown'
         )
+    except asyncio.TimeoutError:
+        await checking_msg.edit_text(
+            "⏱ استغرق تحليل الرابط وقتاً طويلاً جداً (قد يكون الموقع يحجب الطلبات). حاول مجدداً لاحقاً.",
+        )
     except Exception as e:
+        logging.exception("فشل تحليل الرابط: %s", url)
         await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,6 +439,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         context.user_data.pop("active_cancel_event", None)
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """يطبع أي استثناء غير متوقع في الـ logs بدل ما يختفي بصمت."""
+    logging.error("حدث استثناء غير متوقع أثناء معالجة تحديث:", exc_info=context.error)
+
 def main():
     request = HTTPXRequest(connect_timeout=30, read_timeout=180, write_timeout=180)
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
@@ -434,6 +450,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_error_handler(error_handler)
 
     print("🚀 البوت يعمل وجاهز لمعالجة جميع الروابط مع عرض خيارات الجودة...")
     app.run_polling(drop_pending_updates=True)
