@@ -102,6 +102,7 @@ else:
 # "Sign in to confirm you're not a bot" حتى مع كوكيز صحيحة. لذلك نحاول تحديث
 # المكتبة تلقائياً في كل مرة يُقلع فيها البوت (عند كل Deploy/Restart على Render).
 def auto_update_yt_dlp():
+    global yt_dlp
     try:
         old_version = getattr(yt_dlp, "version", None)
         old_version = getattr(old_version, "__version__", "غير معروف") if old_version else "غير معروف"
@@ -118,7 +119,6 @@ def auto_update_yt_dlp():
 
         # إعادة تحميل موديول yt-dlp داخل نفس العملية لتفعيل النسخة الجديدة فوراً
         import importlib
-        global yt_dlp
         importlib.reload(yt_dlp)
 
         new_version = getattr(yt_dlp, "version", None)
