@@ -144,7 +144,7 @@ _UA = (
 
 def base_ydl_opts():
     """خيارات yt-dlp مشتركة لكل الطلبات، تشمل محاولة تجاوز حماية يوتيوب ضد
-    البوتات عبر انتحال شخصية تطبيق يوتيوب على أندرويد (لا يحتاج كوكيز غالباً)،
+    البوتات عبر تجربة عدة عملاء (clients) مختلفة بالترتيب حتى ينجح أحدها،
     مع دعم اختياري لملف كوكيز حقيقي إن توفر (أدق حل لكن يتطلب إعداداً يدوياً)."""
     opts = {
         "quiet": True,
@@ -153,9 +153,10 @@ def base_ydl_opts():
         "retries": 3,
         "http_headers": {"User-Agent": _UA},
         "extractor_args": {
-            # انتحال تطبيق أندرويد يتجاوز فحص "Sign in to confirm you're not a bot"
-            # في كثير من الحالات لأن يوتيوب يطبّق الفحص بشكل أساسي على متصفح الويب
-            "youtube": {"player_client": ["android", "web"]}
+            # نجرب عدة عملاء بالترتيب: tv و ios غالباً أقل عرضة لفحص
+            # "Sign in to confirm you're not a bot" من عميل web، وإن فشل
+            # أحدها ينتقل yt-dlp تلقائياً للتالي في القائمة.
+            "youtube": {"player_client": ["tv", "ios", "android", "web"]}
         },
     }
     if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
