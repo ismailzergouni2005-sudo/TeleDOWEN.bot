@@ -5,7 +5,6 @@ import shutil
 import logging
 import asyncio
 import threading
-import subprocess
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -100,31 +99,69 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None, qua
         lines.append(f"🎬 الجودة/الصيغة: {quality}")
     return "\n".join(lines)
 
-# ---------------- تجميع خيارات الجودة والصيغة ----------------
+# ---------------- تجميع خيارات الجودة والصيغة (مصحّح) ----------------
+
+def _estimate_format_size(f):
+    """يحاول الحصول على حجم تقريبي حقيقي للفورمات (فيديو فقط، بدون صوت)."""
+    size = f.get("filesize") or f.get("filesize_approx")
+    if size:
+        return size
+    tbr = f.get("tbr")  # kbit/s
+    duration = f.get("duration")
+    if tbr and duration:
+        return tbr * 1000 / 8 * duration
+    return None
 
 def get_available_options(info):
+    """
+    يبني قائمة جودات حقيقية ومختلفة فعلياً (استناداً إلى height + حجم تقريبي مختلف)،
+    بدل الاعتماد فقط على قيمة height التي قد تتكرر لنفس الملف الفعلي في يوتيوب/انستغرام.
+    """
     formats = info.get("formats") or []
-    video_opts = {}
-    
+    candidates = {}
+
     for f in formats:
         h = f.get("height")
         vcodec = f.get("vcodec")
         ext = f.get("ext", "mp4")
-        if h and vcodec not in (None, "none"):
-            if h not in video_opts:
-                video_opts[h] = ext
+        if not h or vcodec in (None, "none"):
+            continue
+        size = _estimate_format_size(f)
+        # نحتفظ بأفضل (أكبر) تقدير حجم متاح لكل دقة، لتفادي فورمات فرعية ضعيفة الجودة بنفس الـ height
+        prev = candidates.get(h)
+        if prev is None or (size or 0) > (prev.get("size") or 0):
+            candidates[h] = {"ext": ext, "size": size}
 
-    return video_opts
+    # إذا كانت المنصة توفر دقة واحدة فقط فعلياً (كثير من إنستغرام/بنترست)، لا داعي لعرض جودات وهمية متعددة
+    if len(candidates) <= 1:
+        return candidates
+
+    # استبعاد الدقات التي حجمها مطابق تقريباً لدقة أعلى (فورمات مكررة/وهمية)
+    sorted_heights = sorted(candidates.keys(), reverse=True)
+    filtered = {}
+    last_size = None
+    for h in sorted_heights:
+        size = candidates[h]["size"]
+        if last_size is not None and size and abs(size - last_size) / max(last_size, 1) < 0.05:
+            # نفس الحجم تقريباً (فرق أقل من 5%) => على الأرجح نفس الملف الفعلي، تجاهل التكرار
+            continue
+        filtered[h] = candidates[h]
+        last_size = size or last_size
+
+    return filtered if filtered else candidates
 
 def build_quality_keyboard(video_opts):
     rows = []
     heights = sorted(video_opts.keys(), reverse=True)[:6]
-    
+
     buttons = []
     for h in heights:
-        ext = video_opts[h].upper()
-        buttons.append(InlineKeyboardButton(f"🎬 {h}p ({ext})", callback_data=f"q_{h}"))
-    
+        ext = video_opts[h]["ext"].upper()
+        size = video_opts[h].get("size")
+        size_label = format_size(size) if size else None
+        label = f"🎬 {h}p ({ext})" + (f" ~{size_label}" if size_label else "")
+        buttons.append(InlineKeyboardButton(label, callback_data=f"q_{h}"))
+
     for i in range(0, len(buttons), 2):
         rows.append(buttons[i:i + 2])
 
@@ -197,19 +234,27 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     elif mode == "m4a":
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
-        # اختيار الجودة يتم هنا مباشرة عبر yt-dlp، بدون أي إعادة ضغط لاحقة
-        ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/bestvideo+bestaudio/best"
+        # مهم: الفallback الأخير يبقى مقيداً بنفس الـ height لضمان تغيّر الحجم فعلياً
+        # حسب الجودة المختارة، بدل القفز لأفضل جودة غير محدودة كما كان سابقاً.
+        ydl_opts["format"] = (
+            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"bestvideo[height<={height}]+bestaudio/"
+            f"best[height<={height}]/"
+            f"worst"
+        )
+        ydl_opts["merge_output_format"] = "mp4"
     else:
         ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
+        ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
-        
+
         if mode == "mp3":
             base, _ = os.path.splitext(filename)
             filename = base + ".mp3"
-            
+
         final_file = filename
         if not os.path.exists(final_file):
             base_no_ext, _ = os.path.splitext(filename)
@@ -246,15 +291,15 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
             else:
                 mb = (state.get("downloaded") or 0) / (1024 * 1024)
                 body = f"تم تحميل {mb:.1f} MB..."
-            
+
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل والمعالجة...\n{body}"
-            
+
             now = time.time()
             if text != last_text and (now - last_update) >= 2.0:
                 last_text = text
                 last_update = now
                 await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
-                
+
             await asyncio.sleep(1.0)
     except asyncio.CancelledError:
         pass
@@ -322,7 +367,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
-        
+        context.user_data['video_opts'] = video_opts
+
         await checking_msg.edit_text(
             "👇 **اختر الصيغة والجودة المطلوبة:**",
             reply_markup=build_quality_keyboard(video_opts),
@@ -346,14 +392,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "reselect_format":
-        info = context.user_data.get('ytdlp_info')
-        if info:
-            video_opts = get_available_options(info)
-            await query.message.reply_text(
-                "👇 **اختر الصيغة والجودة المطلوبة:**",
-                reply_markup=build_quality_keyboard(video_opts),
-                parse_mode='Markdown'
-            )
+        video_opts = context.user_data.get('video_opts') or {}
+        await query.message.reply_text(
+            "👇 **اختر الصيغة والجودة المطلوبة:**",
+            reply_markup=build_quality_keyboard(video_opts),
+            parse_mode='Markdown'
+        )
         return
 
     url = context.user_data.get('download_url')
@@ -362,7 +406,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     info = context.user_data.get('ytdlp_info') or {}
-    
+
     quality_str = None
     if query.data.startswith("q_"):
         height = query.data.split("_")[1]
