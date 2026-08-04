@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import shutil
 import logging
 import asyncio
 import threading
@@ -28,10 +29,33 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# 🎞️ فحص توفر ffmpeg على السيرفر (مطلوب لدمج فيديو+صوت لمصادر مثل إنستغرام
+# التي تفصل الفيديو عن الصوت في صيغ منفصلة بدون رابط مباشر مدمج جاهز).
+FFMPEG_PATH = shutil.which("ffmpeg")
+if not FFMPEG_PATH:
+    # على استضافات مثل Render غالباً ما يكون apt-get غير متاح بدون صلاحيات root،
+    # لذلك نحاول جلب نسخة ffmpeg جاهزة تلقائياً عبر مكتبة imageio-ffmpeg
+    # (تُثبّت عبر: pip install imageio-ffmpeg) بدون أي صلاحيات نظام.
+    try:
+        import imageio_ffmpeg
+        FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        FFMPEG_PATH = None
+
+FFMPEG_AVAILABLE = FFMPEG_PATH is not None
+if not FFMPEG_AVAILABLE:
+    logging.warning(
+        "⚠️ ffmpeg غير متاح على هذا السيرفر — سيتم تعطيل خيارات الجودة التي "
+        "تحتاج دمج فيديو+صوت (مثل جودات إنستغرام)، وسيبقى فقط زر الإرسال الفوري. "
+        "لتفعيلها: pip install imageio-ffmpeg"
+    )
+else:
+    logging.info(f"✅ ffmpeg متاح: {FFMPEG_PATH}")
 
 # رموز دائرة الانتظار المتحركة
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
@@ -154,15 +178,36 @@ def get_direct_audio_map(info):
     return audio_map
 
 
+def get_merge_only_heights(info, exclude_heights):
+    """يستخرج الارتفاعات الحقيقية المتوفرة فقط كفيديو منفصل عن الصوت
+    (تحتاج تحميل + دمج بـ ffmpeg)، مستبعداً أي ارتفاع متوفر أصلاً كرابط
+    مباشر جاهز (exclude_heights) حتى لا نكرر نفس الجودة بمسارين."""
+    formats = info.get("formats") or []
+    heights = set()
+    for f in formats:
+        h = f.get("height")
+        vcodec = f.get("vcodec")
+        if h and vcodec and vcodec != "none" and h not in exclude_heights:
+            heights.add(int(h))
+    return sorted(heights, reverse=True)
+
+
 # ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
 
-def build_quality_keyboard_generic(heights=None, bitrates=None):
-    """لوحة جودات مبنية فقط من الجودات الحقيقية المتاحة كروابط مباشرة.
-    لا تُعرض أي جودة غير موجودة فعلياً، وكل زر هنا يُرسل بمرحلة واحدة."""
+def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=None):
+    """لوحة جودات مبنية من الجودات الحقيقية المتاحة:
+    - heights: روابط مباشرة جاهزة (مرحلة واحدة، فورية).
+    - merge_heights: تحتاج تحميل فيديو+صوت منفصلين ثم دمج بـ ffmpeg (مرحلتين، أبطأ)."""
     rows = []
     if heights:
         capped = heights[:6]
         buttons = [InlineKeyboardButton(f"🎬 {h}p", callback_data=f"q_{h}") for h in capped]
+        for i in range(0, len(buttons), 3):
+            rows.append(buttons[i:i + 3])
+
+    if merge_heights and FFMPEG_AVAILABLE:
+        capped_merge = merge_heights[:6]
+        buttons = [InlineKeyboardButton(f"🎞️ {h}p (دمج)", callback_data=f"qm_{h}") for h in capped_merge]
         for i in range(0, len(buttons), 3):
             rows.append(buttons[i:i + 3])
 
@@ -324,6 +369,8 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             )
         },
     }
+    if FFMPEG_PATH:
+        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if audio_only:
         ydl_opts["format"] = "bestaudio/best"
@@ -418,16 +465,22 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     heights = sorted(video_map.keys(), reverse=True)
     bitrates = sorted(audio_map.keys(), reverse=True)
+    merge_heights = get_merge_only_heights(info, exclude_heights=set(heights)) if FFMPEG_AVAILABLE else []
+    context.user_data['merge_video_heights'] = merge_heights
 
+    lines = []
     if heights:
         qualities_text = "، ".join(f"{h}p" for h in heights[:6])
-        info_line = f"🎬 الجودات المتاحة (إرسال مباشر فوري): {qualities_text}"
-    else:
-        info_line = "🎬 لا توجد جودات كملف جاهز للإرسال المباشر، استخدم زر ⚡ الإرسال الفوري."
+        lines.append(f"🎬 جودات فورية (إرسال مباشر بدون انتظار): {qualities_text}")
+    if merge_heights:
+        merge_text = "، ".join(f"{h}p" for h in merge_heights[:6])
+        lines.append(f"🎞️ جودات تحتاج دمج فيديو+صوت (أبطأ قليلاً): {merge_text}")
+    if not heights and not merge_heights:
+        lines.append("🎬 لا توجد جودات محددة، استخدم زر ⚡ الإرسال الفوري.")
 
     await checking_msg.edit_text(
-        f"👇 **اختر الجودة:**\n{info_line}",
-        reply_markup=build_quality_keyboard_generic(heights, bitrates),
+        "👇 **اختر الجودة:**\n" + "\n".join(lines),
+        reply_markup=build_quality_keyboard_generic(heights, bitrates, merge_heights),
         parse_mode='Markdown'
     )
 
@@ -656,6 +709,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             thumb = info.get("thumbnail")
             status_msg = await send_progress_placeholder(query, thumb, meta_caption)
             await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, thumb)
+            return
+
+        # 🎞️ جودة تحتاج دمج فيديو+صوت عبر ffmpeg (تحميل + رفع، مرحلتين، فقط عند الحاجة)
+        if query.data.startswith("qm_"):
+            if not FFMPEG_AVAILABLE:
+                await query.edit_message_text("❌ هذه الجودة تحتاج ffmpeg غير مثبت على السيرفر حالياً.")
+                return
+            height = int(query.data.split("_")[1])
+            await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
         # 🎵 بتريت صوت محدد — إرسال مباشر بمرحلة واحدة أيضاً
