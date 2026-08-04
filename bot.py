@@ -3,10 +3,6 @@ import shutil
 import logging
 import asyncio
 
-# --- تفعيل مكتبة static-ffmpeg ---
-import static_ffmpeg
-static_ffmpeg.add_paths()
-
 from aiohttp import web
 from hydrogram import Client, filters
 from hydrogram.types import Message
@@ -36,7 +32,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
 
-# --- خادم الويب الخاص بـ Render ---
+# --- خادم الويب لإبقاء Render شغالاً ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -48,8 +44,8 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logging.info(f"🌐 Web server running on port {port}")
 
-# --- وظائف التنزيل والرفع ---
 def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
@@ -96,7 +92,7 @@ async def handle_url(client: Client, message: Message):
         size_mb, size_str = format_file_size(filepath)
 
         if size_mb > 2000:
-            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز حد 2000MB.**")
+            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز 2000MB.**")
             return
 
         await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
