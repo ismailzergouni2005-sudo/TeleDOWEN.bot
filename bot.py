@@ -4,45 +4,31 @@ import time
 import shutil
 import logging
 import asyncio
-import threading
 
 # --- تفعيل مكتبة static-ffmpeg تلقائياً ---
 import static_ffmpeg
 static_ffmpeg.add_paths()
 
-from flask import Flask
+from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import yt_dlp
 
-# --- إعداد خادم Flask للبقاء حياً على Render ---
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
-
 logging.basicConfig(level=logging.INFO)
 
-# --- قراءة متغيرات البيئة بآمان ---
+# --- قراءة متغيرات البيئة ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_HASH = os.environ.get("API_HASH")
 raw_api_id = os.environ.get("API_ID")
 
 if not BOT_TOKEN or not API_HASH or not raw_api_id:
-    logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render (Environment Variables)!")
+    logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render!")
     exit(1)
 
 try:
     API_ID = int(raw_api_id)
 except ValueError:
-    logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط بدون حروف!")
+    logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط!")
     exit(1)
 
 # إنشاء جلسة البوت
@@ -53,6 +39,21 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
 
+# --- خادم خفيف لفتح المنفذ (Port) وإرضاء Render ---
+async def handle_ping(request):
+    return web.Response(text="Bot is alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"🌐 Web server running on port {port}")
+
+# --- وظائف التحميل والتنسيق ---
 def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
@@ -74,19 +75,19 @@ def download_video(url, dest_template):
         filename = ydl.prepare_filename(info)
         return filename, info
 
+# --- أوامر البوت ---
 @bot.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "⚡ **أهلاً بك في بوت التحميل السريع!**\n\n"
-        "أرسل لي أي رابط فيديو (TikTok, Instagram, YouTube, Facebook...) "
-        "وسأقوم بتحميله وإرساله لك كفيديو بدعم حجم يصل حتى **2GB**."
+        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك بدعم حجم يصل حتى **2GB**."
     )
 
 @bot.on_message(filters.text & ~filters.command(["start"]))
 async def handle_url(client: Client, message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.reply_text("❌ يرجى إرسال رابط صحيح يبتدئ بـ http أو https.")
+        await message.reply_text("❌ يرجى إرسال رابط صحيح.")
         return
 
     status_msg = await message.reply_text("⏳ جاري تحليل الرابط وبدء التحميل...")
@@ -124,11 +125,12 @@ async def handle_url(client: Client, message: Message):
         if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
-# --- طريقة التشغيل المتوافقة مع Python 3.14 و asyncio الحديث ---
-async def start_bot():
+# --- نقطة التشغيل الرئيسية ---
+async def main():
+    await start_web_server()
     await bot.start()
-    print("🚀 البوت يعمل بنجاح ومستعد لاستقبال الأوامر!")
+    logging.info("🚀 البوت يعمل بنجاح مع دعم الرفع حتى 2GB!")
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    asyncio.run(start_bot())
+    asyncio.run(main())
