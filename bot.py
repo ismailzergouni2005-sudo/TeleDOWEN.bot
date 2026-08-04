@@ -10,8 +10,8 @@ import static_ffmpeg
 static_ffmpeg.add_paths()
 
 from aiohttp import web
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from hydrogram import Client, filters
+from hydrogram.types import Message
 import yt_dlp
 
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +31,7 @@ except ValueError:
     logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط!")
     exit(1)
 
-# إنشاء جلسة البوت
+# إنشاء جلسة البوت باستخدام Hydrogram
 bot = Client("my_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 DOWNLOAD_DIR = "downloads"
@@ -39,7 +39,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg")
 
-# --- خادم خفيف لفتح المنفذ (Port) وإرضاء Render ---
+# --- خادم خفيف لإبقاء السيرفر حياً على Render ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -53,7 +53,7 @@ async def start_web_server():
     await site.start()
     logging.info(f"🌐 Web server running on port {port}")
 
-# --- وظائف التحميل والتنسيق ---
+# --- وظائف التنسيق والتحميل ---
 def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
@@ -75,12 +75,12 @@ def download_video(url, dest_template):
         filename = ydl.prepare_filename(info)
         return filename, info
 
-# --- أوامر البوت ---
+# --- أحداث البوت ---
 @bot.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "⚡ **أهلاً بك في بوت التحميل السريع!**\n\n"
-        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك بدعم حجم يصل حتى **2GB**."
+        "أرسل لي أي رابط فيديو وسأقوم بتحميله وإرساله لك كفيديو بدعم حجم يصل حتى **2GB**."
     )
 
 @bot.on_message(filters.text & ~filters.command(["start"]))
@@ -106,6 +106,7 @@ async def handle_url(client: Client, message: Message):
 
         await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
 
+        # الرفع بواسطة Hydrogram لدعم حتى 2000MB (2GB) كفيديو
         await client.send_video(
             chat_id=message.chat.id,
             video=filepath,
@@ -125,7 +126,7 @@ async def handle_url(client: Client, message: Message):
         if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
-# --- نقطة التشغيل الرئيسية ---
+# --- نقطة التشغيل ---
 async def main():
     await start_web_server()
     await bot.start()
