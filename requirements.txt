@@ -5,3 +5,4 @@ flask
 requests
 pyrofork
 tgcrypto
+nest_asyncio
