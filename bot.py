@@ -195,6 +195,11 @@ def build_cancel_keyboard():
         [InlineKeyboardButton("🛑 إلغاء التحميل الآن", callback_data="cancel_active_task")]
     ])
 
+def build_reselect_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 تحميل بصيغة أخرى", callback_data="reselect_format")]
+    ])
+
 def get_direct_video_url(url):
     ydl_opts = {
         "quiet": True,
@@ -351,7 +356,6 @@ def yt_dlp_download_with_progress(url, dest_template, state, cancel_event, audio
             "preferredquality": str(bitrate) if bitrate else "192",
         }]
     elif height:
-        # 🔥 الضغط وإعادة تحجيم الـ Bitrate لمنع تكرار حجم الفيديو في TikTok
         if height <= 480:
             target_bitrate = "800k"
         elif height <= 720:
@@ -394,6 +398,32 @@ def extract_info_only(url):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✨ أهلاً بك! أرسل لي أي رابط وسأقوم بمعالجته فوراً 🚀")
+
+async def send_quality_menu(chat_id, bot, context):
+    info = context.user_data.get('ytdlp_info')
+    if not info:
+        return
+    video_map = context.user_data.get('direct_video_map', {})
+    audio_map = context.user_data.get('direct_audio_map', {})
+    merge_heights = context.user_data.get('merge_video_heights', [])
+
+    heights = sorted(video_map.keys(), reverse=True)
+    bitrates = sorted(audio_map.keys(), reverse=True)
+
+    lines = []
+    if heights:
+        qualities_text = "، ".join(f"{h}p" for h in heights[:6])
+        lines.append(f"🎬 جودات فورية: {qualities_text}")
+    if merge_heights:
+        merge_text = "، ".join(f"{h}p" for h in merge_heights[:6])
+        lines.append(f"🎞️ جودات دمج: {merge_text}")
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text="👇 **اختر الجودة أو خيار الصوت:**\n" + "\n".join(lines),
+        reply_markup=build_quality_keyboard_generic(heights, bitrates, merge_heights),
+        parse_mode='Markdown'
+    )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -453,17 +483,19 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
 async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, original_url, cancel_event, thumb_url=None, is_audio=False):
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     failed_direct = False
+    sent_message = None
     try:
         size_task = asyncio.get_running_loop().run_in_executor(None, get_remote_file_size, direct_url)
         async def _do_send():
             if is_audio:
                 return await bot.send_audio(
                     chat_id=chat_id, audio=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
+                    reply_markup=build_reselect_keyboard(),
                     read_timeout=180, write_timeout=180, connect_timeout=30,
                 )
             return await bot.send_video(
                 chat_id=chat_id, video=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
-                supports_streaming=True,
+                reply_markup=build_reselect_keyboard(), supports_streaming=True,
                 read_timeout=180, write_timeout=180, connect_timeout=30,
             )
         sent_message = await send_with_retry(_do_send)
@@ -493,10 +525,15 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
             raise RuntimeError("تعذر تنزيل ملف الفيديو.")
         return
 
-    if size_label:
+    if size_label and sent_message:
         caption = f"{meta_caption}\n\n✅ تم الإرسال بنجاح!\n📦 الحجم: {size_label}"
         try:
-            await bot.edit_message_caption(chat_id=chat_id, message_id=sent_message.message_id, caption=caption)
+            await bot.edit_message_caption(
+                chat_id=chat_id, 
+                message_id=sent_message.message_id, 
+                caption=caption,
+                reply_markup=build_reselect_keyboard()
+            )
         except Exception:
             pass
 
@@ -562,10 +599,12 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, canc
                 if is_audio:
                     return await bot.send_audio(
                         chat_id=chat_id, audio=f, caption=caption,
+                        reply_markup=build_reselect_keyboard(),
                         read_timeout=180, write_timeout=180, connect_timeout=30,
                     )
                 return await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption, supports_streaming=True,
+                    reply_markup=build_reselect_keyboard(),
                     read_timeout=180, write_timeout=180, connect_timeout=30,
                 )
         await send_with_retry(_do_send)
@@ -653,17 +692,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "action_cancel":
-        await query.edit_message_text("❌ تم إلغاء الطلب.")
+        await query.delete_message()
         return
 
-    # 🛑 التعامل مع زر الإلغاء أثناء التنزيل والمعالجة النشطة
+    # 🛑 الضغط على إلغاء التحميل -> تفعيل الحدث وحذف الرسالة بالكامل
     if query.data == "cancel_active_task":
         cancel_event = context.user_data.get("active_cancel_event")
         if cancel_event:
             cancel_event.set()
-            await query.edit_message_text("🛑 تم إلغاء تحميل الفيديو بناءً على طلبك.")
-        else:
-            await query.edit_message_text("❌ لا توجد عملية جارية لإلغائها.")
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        return
+
+    # 🔄 الضغط على إعادة إظهار خيارات الصيغ والجودات
+    if query.data == "reselect_format":
+        chat_id = query.message.chat_id
+        await send_quality_menu(chat_id, context.bot, context)
         return
 
     url = context.user_data.get('download_url')
@@ -675,7 +721,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     status_msg = None
 
-    # إنشاء حدث إلغاء جديد للعملية
     cancel_event = asyncio.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
@@ -732,7 +777,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     except asyncio.CancelledError:
-        pass
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
     except Exception as e:
         if status_msg is not None:
             try:
