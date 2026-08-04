@@ -63,7 +63,7 @@ def format_duration(seconds):
         return "غير معروف"
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{m:02d}"
 
 def format_size(num_bytes):
     try:
@@ -145,7 +145,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل والحل لدعم بنترست ----------------
+# ---------------- منطق التحميل والتعديل لـ Pinterest ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -197,6 +197,15 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
         ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/bestvideo+bestaudio/best"
+        # إعادة ضغط الفيديو وتغيير مقاسه تلقائياً لتقليل الحجم
+        if FFMPEG_PATH:
+            ydl_opts["postprocessors"] = [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }]
+            ydl_opts["postprocessor_args"] = {
+                'videoconvertor': ['-vf', f'scale=-2:{height}', '-crf', '28']
+            }
     else:
         ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
 
@@ -430,7 +439,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل مع الدعم الشامل لجميع المنصات...")
+    print("🚀 البوت يعمل وجاهز لمعالجة وإعادة ضغط الفيديوهات...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
