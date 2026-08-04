@@ -109,7 +109,39 @@ def download_tiktok_fast(tiktok_url):
     return None
 
 
+# ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
+
+def get_direct_video_url(url):
+    """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً.
+    هذا يجعل الإرسال فورياً لأن تيليجرام نفسه يجلب الفيديو من رابطه (بسرعة عالية)
+    بدل أن يُنزّله سيرفرنا ثم يعيد رفعه (وهذا ما كان يسبب البطء الشديد)."""
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "b[ext=mp4]/b/best",
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        direct = info.get("url")
+        if not direct and info.get("formats"):
+            for f in reversed(info["formats"]):
+                if f.get("url") and f.get("vcodec") != "none":
+                    direct = f["url"]
+                    break
+        return direct, info
+
+
 # ---------------- تنزيل الملف مع تتبع نسبة التقدم الحقيقية (مؤشر حي مستمر) ----------------
+# ملاحظة: هذا المسار (تنزيل محلي كامل) يُستخدم فقط عند طلب "الصوت فقط"،
+# لأن استخراج الصوت عبر ffmpeg يتطلب وجود الملف محلياً، ولا مفر من ذلك.
 
 async def edit_progress_message(status_msg, text):
     try:
@@ -327,6 +359,42 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
     return await query.edit_message_text(text)
 
 
+async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None):
+    """يرسل الفيديو مباشرة عبر رابطه لتيليجرام (بدون تنزيل/رفع من عندنا) -> سريع جداً"""
+    caption = f"{meta_caption}\n\n✅ تم الإرسال بنجاح!"
+
+    ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
+    try:
+        await bot.send_video(
+            chat_id=chat_id, video=direct_url, caption=caption, supports_streaming=True,
+            read_timeout=180, write_timeout=180, connect_timeout=30,
+        )
+    finally:
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+
+async def _sending_ticker(status_msg, meta_caption):
+    """مؤشر بسيط أثناء انتظار جلب تيليجرام للفيديو من رابطه (عادة ثوانٍ قليلة فقط)"""
+    frame = 0
+    try:
+        while True:
+            frame = (frame + 1) % len(SPINNER_FRAMES)
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري الإرسال..."
+            await edit_progress_message(status_msg, text)
+            await asyncio.sleep(1.5)
+    except asyncio.CancelledError:
+        pass
+
+
 async def upload_ticker(status_msg, meta_caption):
     """يعرض مؤشراً حياً وصادقاً أثناء الرفع (عدّاد وقت فعلي + دائرة متحركة)،
     بدون نسبة مئوية وهمية لأن تيليجرام لا يوفر نسبة رفع حقيقية عبر الـ API"""
@@ -395,7 +463,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = None
 
     try:
-        # 1️⃣ نفس منطق تيك توك الأصلي عبر TikWM API + إضافة الوصف والتقدم
+        # 1️⃣ نفس منطق تيك توك الأصلي عبر TikWM API
         if "tiktok.com" in url:
             data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
             if not data:
@@ -410,16 +478,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title=data.get("title"),
             )
             thumb = data.get("origin_cover") or data.get("cover")
-            direct_url = data.get("music") if want_audio else (data.get("hdplay") or data.get("play"))
 
+            if not want_audio:
+                # ⚡ فيديو: إرسال فوري عبر الرابط المباشر (بدون تنزيل/رفع من عندنا) -> سريع
+                direct_url = data.get("hdplay") or data.get("play")
+                if not direct_url:
+                    await query.edit_message_text("❌ تعذر جلب الرابط المباشر.")
+                    return
+
+                status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+                await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
+                return
+
+            # 🎵 صوت فقط: يتطلب تنزيلاً محلياً (لا بديل عنه)
+            direct_url = data.get("music")
             if not direct_url:
-                await query.edit_message_text("❌ تعذر جلب الرابط المباشر.")
+                await query.edit_message_text("❌ تعذر جلب رابط الصوت.")
                 return
 
             status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-
-            ext = "mp3" if want_audio else "mp4"
-            filename = f"{DOWNLOAD_DIR}/tt_{status_msg.message_id}.{ext}"
+            filename = f"{DOWNLOAD_DIR}/tt_{status_msg.message_id}.mp3"
 
             state = {"stage": "downloading", "percent": None, "downloaded": 0}
             await run_with_live_progress(
@@ -427,16 +505,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not os.path.exists(filename):
-                raise RuntimeError("تعذر حفظ ملف تيك توك محلياً.")
+                raise RuntimeError("تعذر حفظ ملف الصوت محلياً.")
 
-            await send_final_file(bot, chat_id, status_msg, filename, meta_caption, is_audio=want_audio)
+            await send_final_file(bot, chat_id, status_msg, filename, meta_caption, is_audio=True)
             return
 
-        # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ) + الوصف والتقدم
+        # 2️⃣ نفس منطق yt-dlp الأصلي (إنستغرام، يوتيوب... إلخ)
         else:
-            # تحديث فوري حتى لا تبقى الرسالة بلا رد أثناء انتظار معلومات الفيديو (قد تستغرق ثوانٍ لإنستغرام)
+            # تحديث فوري حتى لا تبقى الرسالة بلا رد أثناء انتظار معلومات الفيديو
             await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
 
+            if not want_audio:
+                # ⚡ فيديو: نجلب الرابط المباشر فقط (بدون تنزيل) ثم نرسله فوراً لتيليجرام -> سريع
+                direct_url, info = await asyncio.get_running_loop().run_in_executor(
+                    None, get_direct_video_url, url
+                )
+                meta_caption = build_meta_caption(
+                    uploader=info.get("uploader") or info.get("channel"),
+                    duration=info.get("duration"),
+                    views=info.get("view_count"),
+                    title=info.get("title"),
+                )
+                thumb = info.get("thumbnail")
+
+                if not direct_url:
+                    await query.edit_message_text("❌ تعذر جلب رابط الفيديو المباشر، جرب رابطاً آخر.")
+                    return
+
+                status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+                await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
+                return
+
+            # 🎵 صوت فقط: يتطلب تنزيلاً محلياً + استخراج عبر ffmpeg (لا بديل عنه)
             info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
             meta_caption = build_meta_caption(
                 uploader=info.get("uploader") or info.get("channel"),
@@ -451,14 +551,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
             state = {"stage": "downloading", "percent": None, "downloaded": 0}
             filepath, _ = await run_with_live_progress(
-                yt_dlp_download_with_progress, (url, dest_template, state, want_audio),
+                yt_dlp_download_with_progress, (url, dest_template, state, True),
                 status_msg, meta_caption, state
             )
 
             if not filepath or not os.path.exists(filepath):
                 raise RuntimeError("تعذر العثور على الملف بعد التحميل، جرب رابطاً آخر.")
 
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=want_audio)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=True)
             return
 
     except Exception as e:
