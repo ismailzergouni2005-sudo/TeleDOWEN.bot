@@ -2,4 +2,3 @@ hydrogram
 tgcrypto
 yt-dlp
 aiohttp
-static-ffmpeg
