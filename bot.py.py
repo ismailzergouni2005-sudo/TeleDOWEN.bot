@@ -4,7 +4,6 @@ import time
 import logging
 import asyncio
 import threading
-import subprocess
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,7 +27,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -142,48 +141,8 @@ def build_quality_keyboard_generic(heights=None):
     return InlineKeyboardMarkup(rows)
 
 
-def build_quality_keyboard_tiktok(data):
-    """تيك توك عبر TikWM يوفر فعلياً نسختين مختلفتين فقط من الفيديو (HD و SD)،
-    وليس 6 مستويات دقة كما في يوتيوب. لذا نعرض الخيارات الحقيقية فقط
-    (حجم الملف يظهر لاحقاً في وصف الفيديو بعد الإرسال، وليس على الأزرار)."""
-    hd_url = data.get("hdplay")
-    sd_url = data.get("play")
-
-    rows = []
-    video_row = []
-    if hd_url:
-        video_row.append(InlineKeyboardButton("🎬 جودة عالية (HD)", callback_data="th"))
-    # لا نعرض زر SD منفصلاً إن كان بنفس رابط HD (يعني تيك توك لا يوفر نسخة أخرى فعلياً)
-    if sd_url and sd_url != hd_url:
-        video_row.append(InlineKeyboardButton("🎬 جودة عادية (SD)", callback_data="ts"))
-    if video_row:
-        rows.append(video_row)
-    elif sd_url:
-        # لا يوجد سوى رابط واحد متاح فعلياً
-        rows.append([InlineKeyboardButton("🎬 تحميل الفيديو", callback_data="th")])
-
-    rows.append([
-        InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
-    ])
-    rows.append([InlineKeyboardButton("⚡ إرسال فوري", callback_data="v_instant")])
-    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
-    return InlineKeyboardMarkup(rows)
 
 
-# ---------------- تيك توك (نفس منطق TikWM الأصلي) ----------------
-
-def get_tiktok_data(tiktok_url):
-    """جلب بيانات فيديو تيك توك (روابط + معلومات) عبر TikWM API"""
-    api_url = "https://www.tikwm.com/api/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    params = {"url": tiktok_url, "hd": 1}
-    response = requests.get(api_url, params=params, headers=headers, timeout=10)
-    data = response.json()
-    if data.get("code") == 0:
-        return data["data"]
-    return None
 
 
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
@@ -265,41 +224,6 @@ async def run_with_live_progress(func, args, status_msg, meta_caption, state):
             await ticker
         except asyncio.CancelledError:
             pass
-
-
-def download_file_with_progress(direct_url, dest_path, state):
-    """تنزيل رابط مباشر (تيك توك) عبر requests مع تحديث حالة التقدم في state"""
-    headers = {"User-Agent": "Mozilla/5.0"}
-    with requests.get(direct_url, headers=headers, stream=True, timeout=30) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        with open(dest_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 256):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                downloaded += len(chunk)
-                state["downloaded"] = downloaded
-                state["percent"] = (downloaded / total * 100) if total > 0 else None
-    state["stage"] = "processing"
-    return dest_path
-
-
-def convert_audio_bitrate(input_path, output_path, bitrate_kbps):
-    """يحوّل ملف صوتي إلى بتريت محدد عبر ffmpeg (يُستخدم لتيك توك حيث
-    لا يوفر TikWM خيارات بتريت مباشرة)"""
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", input_path,
-            "-b:a", f"{bitrate_kbps}k",
-            "-vn", output_path,
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return output_path
 
 
 def _locate_downloaded_file(info, ydl, audio_only):
@@ -442,21 +366,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = clean_url(url_match.group(0))
     context.user_data['download_url'] = url
-    context.user_data.pop('tiktok_data', None)
     context.user_data.pop('ytdlp_info', None)
-
-    if "tiktok.com" in url:
-        checking_msg = await update.message.reply_text("🔍 جاري تحليل الرابط...")
-        data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-        if not data:
-            await checking_msg.edit_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-            return
-        context.user_data['tiktok_data'] = data
-        await checking_msg.edit_text(
-            "👇 **اختر الجودة المتاحة فعلياً:**", reply_markup=build_quality_keyboard_tiktok(data),
-            parse_mode='Markdown'
-        )
-        return
 
     checking_msg = await update.message.reply_text("🔍 جاري تحليل الرابط...")
     try:
@@ -576,65 +486,6 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         pass
 
 
-async def handle_tiktok_video_pick(query, context, data, which, chat_id, bot):
-    """which: 'hd' أو 'sd' — يستخدم الرابط الحقيقي المطابق تماماً لما اختاره المستخدم"""
-    author = data.get("author", {}) or {}
-    meta_caption = build_meta_caption(
-        uploader=author.get("nickname") or author.get("unique_id"),
-        duration=data.get("duration"),
-        views=data.get("play_count"),
-        title=data.get("title"),
-    )
-    thumb = data.get("origin_cover") or data.get("cover")
-    if which == "hd":
-        direct_url = data.get("hdplay") or data.get("play")
-    else:
-        direct_url = data.get("play") or data.get("hdplay")
-
-    if not direct_url:
-        await query.edit_message_text("❌ تعذر جلب الرابط المباشر لهذه الجودة.")
-        return
-
-    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-    await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
-
-
-async def handle_tiktok_audio_bitrate(query, context, data, bitrate, chat_id, bot):
-    author = data.get("author", {}) or {}
-    meta_caption = build_meta_caption(
-        uploader=author.get("nickname") or author.get("unique_id"),
-        duration=data.get("duration"),
-        views=data.get("play_count"),
-        title=data.get("title"),
-    )
-    thumb = data.get("origin_cover") or data.get("cover")
-    direct_url = data.get("music")
-    if not direct_url:
-        await query.edit_message_text("❌ تعذر جلب رابط الصوت.")
-        return
-
-    status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-    raw_path = f"{DOWNLOAD_DIR}/tt_raw_{status_msg.message_id}.mp3"
-    final_path = f"{DOWNLOAD_DIR}/tt_{bitrate}k_{status_msg.message_id}.mp3"
-
-    state = {"stage": "downloading", "percent": None, "downloaded": 0}
-    await run_with_live_progress(
-        download_file_with_progress, (direct_url, raw_path, state), status_msg, meta_caption, state
-    )
-
-    if not os.path.exists(raw_path):
-        raise RuntimeError("تعذر حفظ ملف الصوت محلياً.")
-
-    state["stage"] = "processing"
-    await asyncio.get_running_loop().run_in_executor(
-        None, convert_audio_bitrate, raw_path, final_path, bitrate
-    )
-    if os.path.exists(raw_path):
-        os.remove(raw_path)
-
-    await send_final_file(bot, chat_id, status_msg, final_path, meta_caption, is_audio=True)
-
-
 async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
     info = context.user_data.get('ytdlp_info')
     if not info:
@@ -708,22 +559,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     bot = context.bot
     status_msg = None
-    is_tiktok = "tiktok.com" in url
 
     try:
-        # 🎬 تيك توك: جودة حقيقية واحدة (HD) أو (SD) — مطابقة تماماً لما يعرضه الزر
-        if query.data in ("th", "ts"):
-            data = context.user_data.get('tiktok_data')
-            if not data:
-                data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-            if not data:
-                await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-                return
-            which = "hd" if query.data == "th" else "sd"
-            await handle_tiktok_video_pick(query, context, data, which, chat_id, bot)
-            return
-
-        # 🎬 جودة فيديو محددة ليوتيوب/إنستغرام (1080/720/480/360/240/144)
+        # 🎬 جودة فيديو محددة (نفس المنطق لكل المصادر: يوتيوب/إنستغرام/تيك توك...)
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
             await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
@@ -732,60 +570,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 🎵 بتريت صوت محدد (128/64)
         if query.data.startswith("a_"):
             bitrate = int(query.data.split("_")[1])
-            if is_tiktok:
-                data = context.user_data.get('tiktok_data')
-                if not data:
-                    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-                if not data:
-                    await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-                    return
-                await handle_tiktok_audio_bitrate(query, context, data, bitrate, chat_id, bot)
-            else:
-                await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+            await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
             return
 
-        # ⚡ المسار السريع الأصلي: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
+        # ⚡ المسار السريع: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
         if query.data == "v_instant":
-            if is_tiktok:
-                data = context.user_data.get('tiktok_data')
-                if not data:
-                    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-                if not data:
-                    await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-                    return
-                author = data.get("author", {}) or {}
-                meta_caption = build_meta_caption(
-                    uploader=author.get("nickname") or author.get("unique_id"),
-                    duration=data.get("duration"),
-                    views=data.get("play_count"),
-                    title=data.get("title"),
-                )
-                thumb = data.get("origin_cover") or data.get("cover")
-                direct_url = data.get("hdplay") or data.get("play")
-                if not direct_url:
-                    await query.edit_message_text("❌ تعذر جلب الرابط المباشر.")
-                    return
-                status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-                await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
+            await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
+            direct_url, info = await asyncio.get_running_loop().run_in_executor(
+                None, get_direct_video_url, url
+            )
+            meta_caption = build_meta_caption(
+                uploader=info.get("uploader") or info.get("channel"),
+                duration=info.get("duration"),
+                views=info.get("view_count"),
+                title=info.get("title"),
+            )
+            thumb = info.get("thumbnail")
+            if not direct_url:
+                await query.edit_message_text("❌ تعذر جلب رابط الفيديو المباشر، جرب رابطاً آخر.")
                 return
-            else:
-                await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
-                direct_url, info = await asyncio.get_running_loop().run_in_executor(
-                    None, get_direct_video_url, url
-                )
-                meta_caption = build_meta_caption(
-                    uploader=info.get("uploader") or info.get("channel"),
-                    duration=info.get("duration"),
-                    views=info.get("view_count"),
-                    title=info.get("title"),
-                )
-                thumb = info.get("thumbnail")
-                if not direct_url:
-                    await query.edit_message_text("❌ تعذر جلب رابط الفيديو المباشر، جرب رابطاً آخر.")
-                    return
-                status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-                await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
-                return
+            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+            await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
+            return
 
     except Exception as e:
         if status_msg is not None:
