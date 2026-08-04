@@ -3,3 +3,5 @@ yt-dlp
 imageio-ffmpeg
 flask
 requests
+pyrogram
+tgcrypto
