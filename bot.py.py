@@ -28,7 +28,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -81,6 +81,18 @@ def format_size(num_bytes):
     return f"{num_bytes / 1024:.0f} KB"
 
 
+def get_remote_file_size(url):
+    """يحاول معرفة حجم الملف عبر طلب HEAD قبل الإرسال المباشر (بدون تنزيله)،
+    يُستخدم فقط لعرض الحجم في وصف الفيديو بعد نجاح الإرسال."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
+        size = r.headers.get("content-length")
+        return format_size(size) if size else None
+    except Exception:
+        return None
+
+
 def format_count(n):
     try:
         n = int(n)
@@ -106,16 +118,22 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
 
 # ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
 
-def build_quality_keyboard_generic():
-    """لوحة الجودات القياسية (يوتيوب/إنستغرام عبر yt-dlp) — شبكة 3x2 للفيديو
-    + صف لبتريت الصوت، بنفس شكل اللقطة المرفقة. الجودة الفعلية المُسلَّمة قد
-    تختلف قليلاً إن لم تتوفر بالضبط، وستظهر في وصف الفيديو بعد التحميل."""
+def build_quality_keyboard_generic(heights=None):
+    """لوحة جودات يوتيوب/إنستغرام. إن توفرت قائمة heights حقيقية (من extract_info_only)
+    نعرض زراً واحداً فقط لكل دقة موجودة فعلاً (فيديو بدقة واحدة يظهر بزر واحد فقط)،
+    بدل عرض 6 أزرار وهمية دائماً."""
     rows = []
-    for i in range(0, len(VIDEO_QUALITIES), 3):
-        chunk = VIDEO_QUALITIES[i:i + 3]
-        rows.append([
-            InlineKeyboardButton(f"🎬 {q}p", callback_data=f"q_{q}") for q in chunk
-        ])
+    if heights:
+        capped = heights[:6]  # سقف احتياطي لتفادي لوحة طويلة جداً
+        buttons = [InlineKeyboardButton(f"🎬 {h}p", callback_data=f"q_{h}") for h in capped]
+        for i in range(0, len(buttons), 3):
+            rows.append(buttons[i:i + 3])
+    else:
+        # لم نتمكن من قراءة الصيغ (نادر) — نعرض القائمة القياسية كخيار احتياطي
+        for i in range(0, len(VIDEO_QUALITIES), 3):
+            chunk = VIDEO_QUALITIES[i:i + 3]
+            rows.append([InlineKeyboardButton(f"🎬 {q}p", callback_data=f"q_{q}") for q in chunk])
+
     rows.append([
         InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
     ])
@@ -126,22 +144,18 @@ def build_quality_keyboard_generic():
 
 def build_quality_keyboard_tiktok(data):
     """تيك توك عبر TikWM يوفر فعلياً نسختين مختلفتين فقط من الفيديو (HD و SD)،
-    وليس 6 مستويات دقة كما في يوتيوب. لذا نعرض الخيارات الحقيقية فقط مع حجمها
-    الفعلي بدل الإيحاء بوجود جودات غير موجودة فعلاً."""
+    وليس 6 مستويات دقة كما في يوتيوب. لذا نعرض الخيارات الحقيقية فقط
+    (حجم الملف يظهر لاحقاً في وصف الفيديو بعد الإرسال، وليس على الأزرار)."""
     hd_url = data.get("hdplay")
     sd_url = data.get("play")
-    hd_size = format_size(data.get("hd_size") or data.get("hdsize"))
-    sd_size = format_size(data.get("size") or data.get("wm_size"))
 
     rows = []
     video_row = []
     if hd_url:
-        label = "🎬 جودة عالية (HD)" + (f" · {hd_size}" if hd_size else "")
-        video_row.append(InlineKeyboardButton(label, callback_data="th"))
+        video_row.append(InlineKeyboardButton("🎬 جودة عالية (HD)", callback_data="th"))
     # لا نعرض زر SD منفصلاً إن كان بنفس رابط HD (يعني تيك توك لا يوفر نسخة أخرى فعلياً)
     if sd_url and sd_url != hd_url:
-        label = "🎬 جودة عادية (SD)" + (f" · {sd_size}" if sd_size else "")
-        video_row.append(InlineKeyboardButton(label, callback_data="ts"))
+        video_row.append(InlineKeyboardButton("🎬 جودة عادية (SD)", callback_data="ts"))
     if video_row:
         rows.append(video_row)
     elif sd_url:
@@ -399,6 +413,20 @@ def extract_info_only(url):
         return ydl.extract_info(url, download=False)
 
 
+def get_available_video_heights(info):
+    """يستخرج القيم الحقيقية والمختلفة لدقة الفيديو المتوفرة فعلاً من قائمة الصيغ،
+    حتى لا نعرض للمستخدم جودات وهمية غير موجودة أصلاً (مثل الريلز التي غالباً
+    لا تحتوي إلا على دقة واحدة)."""
+    formats = info.get("formats") or []
+    heights = set()
+    for f in formats:
+        h = f.get("height")
+        vcodec = f.get("vcodec")
+        if h and vcodec and vcodec != "none":
+            heights.add(int(h))
+    return sorted(heights, reverse=True)
+
+
 # ---------------- الرسائل والأزرار ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -415,6 +443,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = clean_url(url_match.group(0))
     context.user_data['download_url'] = url
     context.user_data.pop('tiktok_data', None)
+    context.user_data.pop('ytdlp_info', None)
 
     if "tiktok.com" in url:
         checking_msg = await update.message.reply_text("🔍 جاري تحليل الرابط...")
@@ -429,8 +458,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(
-        "👇 **اختر الجودة:**", reply_markup=build_quality_keyboard_generic(), parse_mode='Markdown'
+    checking_msg = await update.message.reply_text("🔍 جاري تحليل الرابط...")
+    try:
+        info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+    except Exception as e:
+        await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
+        return
+
+    context.user_data['ytdlp_info'] = info
+    heights = get_available_video_heights(info)
+    await checking_msg.edit_text(
+        "👇 **اختر الجودة المتاحة فعلياً:**", reply_markup=build_quality_keyboard_generic(heights),
+        parse_mode='Markdown'
     )
 
 
@@ -447,19 +486,28 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
 
 
 async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None):
-    caption = f"{meta_caption}\n\n✅ تم الإرسال بنجاح!"
-
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     try:
-        await bot.send_video(
-            chat_id=chat_id, video=direct_url, caption=caption, supports_streaming=True,
+        # نجلب حجم الملف بالتوازي مع الإرسال حتى لا نؤخر الرفع من أجله
+        size_task = asyncio.get_running_loop().run_in_executor(None, get_remote_file_size, direct_url)
+        sent_message = await bot.send_video(
+            chat_id=chat_id, video=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
+            supports_streaming=True,
             read_timeout=180, write_timeout=180, connect_timeout=30,
         )
+        size_label = await size_task
     finally:
         ticker.cancel()
         try:
             await ticker
         except asyncio.CancelledError:
+            pass
+
+    if size_label:
+        caption = f"{meta_caption}\n\n✅ تم الإرسال بنجاح!\n📦 الحجم: {size_label}"
+        try:
+            await bot.edit_message_caption(chat_id=chat_id, message_id=sent_message.message_id, caption=caption)
+        except Exception:
             pass
 
     try:
@@ -495,7 +543,10 @@ async def upload_ticker(status_msg, meta_caption):
 
 
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
+    size_label = format_size(os.path.getsize(filepath)) if os.path.exists(filepath) else None
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
+    if size_label:
+        caption += f"\n📦 الحجم: {size_label}"
 
     ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption))
     try:
@@ -585,8 +636,10 @@ async def handle_tiktok_audio_bitrate(query, context, data, bitrate, chat_id, bo
 
 
 async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
-    await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
-    info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+    info = context.user_data.get('ytdlp_info')
+    if not info:
+        await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
+        info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
     meta_caption = build_meta_caption(
         uploader=info.get("uploader") or info.get("channel"),
         duration=info.get("duration"),
@@ -614,7 +667,9 @@ async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
 
 
 async def handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot):
-    info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
+    info = context.user_data.get('ytdlp_info')
+    if not info:
+        info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
     meta_caption = build_meta_caption(
         uploader=info.get("uploader") or info.get("channel"),
         duration=info.get("duration"),
