@@ -42,9 +42,37 @@ AUDIO_BITRATES = [128, 64]
 # 🍪 مسار ملف كوكيز يوتيوب (اختياري) لتجاوز رسالة "Sign in to confirm you're not a bot"
 # التي تظهر أحياناً على سيرفرات الاستضافة (Render/Railway/إلخ). لإصلاحها:
 # 1) ثبّت إضافة مثل "Get cookies.txt LOCALLY" على متصفحك وسجّل الدخول ليوتيوب.
-# 2) صدّر كوكيز يوتيوب كملف cookies.txt وارفعه بجانب هذا الملف على السيرفر.
-# 3) عيّن متغير بيئة باسم YOUTUBE_COOKIES_FILE يشير لمسار الملف (مثال: /app/cookies.txt).
-YOUTUBE_COOKIES_FILE = os.environ.get("YOUTUBE_COOKIES_FILE")
+# 2) صدّر كوكيز يوتيوب كملف cookies.txt وارفعه بجانب هذا الملف على السيرفر
+#    (أو كـ Secret File على Render مثلاً في /etc/secrets/cookies.txt).
+# 3) عيّن متغير بيئة باسم YOUTUBE_COOKIES_FILE يشير لمسار الملف الأصلي.
+#
+# ⚠️ ملاحظة مهمة: بعض منصات الاستضافة (مثل Render "Secret Files") تضع الملف
+# في مسار للقراءة فقط (read-only). لكن yt-dlp يحاول إعادة كتابة/تحديث الكوكيز
+# في نفس الملف بعد كل طلب، مما يسبب خطأ:
+#   [Errno 30] Read-only file system: '/etc/secrets/cookies.txt'
+# لحل هذا، ننسخ الملف عند بدء التشغيل إلى مسار قابل للكتابة داخل DOWNLOAD_DIR
+# ونستخدم هذه النسخة بدل الأصل المحمي.
+_RAW_YOUTUBE_COOKIES_FILE = os.environ.get("YOUTUBE_COOKIES_FILE")
+YOUTUBE_COOKIES_FILE = None
+
+
+def _prepare_writable_cookies_file():
+    """ينسخ ملف الكوكيز (الذي قد يكون للقراءة فقط) إلى مسار قابل للكتابة
+    داخل مجلد التنزيلات، حتى يستطيع yt-dlp تحديثه دون فشل."""
+    global YOUTUBE_COOKIES_FILE
+    if _RAW_YOUTUBE_COOKIES_FILE and os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
+        writable_path = os.path.join(DOWNLOAD_DIR, "cookies.txt")
+        try:
+            import shutil
+            shutil.copyfile(_RAW_YOUTUBE_COOKIES_FILE, writable_path)
+            YOUTUBE_COOKIES_FILE = writable_path
+            logging.info(f"تم نسخ ملف الكوكيز إلى مسار قابل للكتابة: {writable_path}")
+        except Exception as e:
+            logging.warning(f"تعذر نسخ ملف الكوكيز إلى مسار قابل للكتابة: {e}")
+            YOUTUBE_COOKIES_FILE = None
+
+
+_prepare_writable_cookies_file()
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
