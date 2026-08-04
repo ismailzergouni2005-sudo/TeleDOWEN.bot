@@ -6,15 +6,17 @@ import logging
 import asyncio
 import threading
 
+# --- تفعيل مكتبة static-ffmpeg لتجهيز المحول تلقائياً ---
 import static_ffmpeg
 static_ffmpeg.add_paths()
+# ----------------------------------------------------
 
 from flask import Flask
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import Message
 import yt_dlp
 
-# --- إعداد خادم Flask للبقاء حياً على Render ---
+# --- إعداد خادم Flask لإبقاء البوت نشطاً على Render ---
 app = Flask('')
 
 @app.route('/')
@@ -29,14 +31,22 @@ threading.Thread(target=run_web, daemon=True).start()
 
 logging.basicConfig(level=logging.INFO)
 
-# --- البيانات الحساسة من متغيرات البيئة ---
+# --- قراءة متغيرات البيئة بآمان ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_ID = int(os.environ.get("API_ID", 0))      # احصل عليه من my.telegram.org
-API_HASH = os.environ.get("API_HASH")          # احصل عليه من my.telegram.org
+API_HASH = os.environ.get("API_HASH")
+raw_api_id = os.environ.get("API_ID")
 
-if not BOT_TOKEN or not API_ID or not API_HASH:
-    raise RuntimeError("❌ يرجى ضبط BOT_TOKEN و API_ID و API_HASH في متغيرات البيئة.")
+if not BOT_TOKEN or not API_HASH or not raw_api_id:
+    logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render (Environment Variables)!")
+    exit(1)
 
+try:
+    API_ID = int(raw_api_id)
+except ValueError:
+    logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط بدون حروف!")
+    exit(1)
+
+# إنشاء جلسة العميل الخاصة بـ Pyrogram
 bot = Client("my_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 DOWNLOAD_DIR = "downloads"
@@ -66,41 +76,58 @@ def download_video(url, dest_template):
         return filename, info
 
 @bot.on_message(filters.command("start"))
-async def start_cmd(client, message: Message):
-    await message.reply_text("⚡ أهلاً بك! أرسل لي أي رابط فيديو وسأقوم بتحميله لك حتى حجم 2GB كفيديو عادي.")
+async def start_cmd(client: Client, message: Message):
+    await message.reply_text(
+        "⚡ **أهلاً بك في بوت التحميل السريع!**\n\n"
+        "أرسل لي أي رابط فيديو (TikTok, Instagram, YouTube, Facebook...) "
+        "وسأقوم بتحميله وإرساله لك كفيديو بدعم حجم يصل حتى **2GB**."
+    )
 
 @bot.on_message(filters.text & ~filters.command(["start"]))
-async def handle_url(client, message: Message):
+async def handle_url(client: Client, message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.reply_text("❌ يرجى إرسال رابط صحيح.")
+        await message.reply_text("❌ يرجى إرسال رابط صحيح يبتدئ بـ http أو https.")
         return
 
-    status_msg = await message.reply_text("⏳ جاري جلب المقطع وتحميله...")
+    status_msg = await message.reply_text("⏳ جاري تحليل الرابط وبدء التحميل...")
     dest_template = f"{DOWNLOAD_DIR}/{message.id}_%(id)s.%(ext)s"
+    filepath = None
 
     try:
-        # التحميل في خلفية منفصلة
+        # تشغيل التنزيل في مسار منفصل لمنع تجميد البوت
         loop = asyncio.get_running_loop()
         filepath, info = await loop.run_in_executor(None, download_video, url, dest_template)
         
         size_mb, size_str = format_file_size(filepath)
-        await status_msg.edit_text(f"⬆️ جاري الرفع إلى تليجرام...\n💾 الحجم: {size_str}")
 
-        # دالة الرفع التابعة لـ Pyrogram تتيح حتى 2000MB (2GB) كفيديو
+        # التحقق من أن حجم الملف لا يتجاوز الحد الأقصى المطلق لتليجرام (2GB)
+        if size_mb > 2000:
+            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز الحد الأقصى المسموح به في تليجرام (2000MB).**")
+            return
+
+        await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
+
+        # رفع الفيديو باستخدام Pyrogram لدعم حتى 2GB
         await client.send_video(
             chat_id=message.chat.id,
             video=filepath,
-            caption=f"✅ **تم التحميل بنجاح!**\n🎬 {info.get('title', 'فيديو')}\n💾 الحجم: {size_str}",
+            caption=(
+                f"🎬 <b>{info.get('title', 'فيديو')}</b>\n"
+                f"💾 <b>الحجم:</b> {size_str}\n\n"
+                f"✅ <i>تم التحميل بنجاح!</i>"
+            ),
             supports_streaming=True
         )
         await status_msg.delete()
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ حدث خطأ أثناء العملية:\n`{str(e)[:150]}`")
+        logging.error("Download/Upload Error:", exc_info=True)
+        await status_msg.edit_text(f"❌ **حدث خطأ أثناء العملية:**\n`{str(e)[:150]}`")
     finally:
-        if 'filepath' in locals() and os.path.exists(filepath):
+        if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
-print("🚀 البوت يعمل بنجاح مع دعم رفع حتى 2GB...")
-bot.run()
+if __name__ == '__main__':
+    print("🚀 جاري تشغيل البوت مع دعم الرفع حتى 2GB...")
+    bot.run()
