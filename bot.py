@@ -129,9 +129,7 @@ def get_direct_quality_map(info):
     for f in formats:
         h = f.get("height")
         vcodec = f.get("vcodec")
-        acodec = f.get("acodec")
         url = f.get("url")
-        # دعم جودات تيك توك التي قد تفقد acodec في البداية أحياناً
         if h and url and vcodec not in (None, "none"):
             current = video_map.get(h)
             if not current or (f.get("tbr") or 0) > (current.get("tbr") or 0):
@@ -163,7 +161,7 @@ def get_merge_only_heights(info, exclude_heights):
             heights.add(int(h))
     return sorted(heights, reverse=True)
 
-# ---------------- لوحة اختيار الجودة ----------------
+# ---------------- لوحات الأزرار ----------------
 
 def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=None):
     rows = []
@@ -179,8 +177,6 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
         for i in range(0, len(buttons), 3):
             rows.append(buttons[i:i + 3])
 
-    # ✅ إظهار أزرار تحميل الصوت حتى لو لم يتوفر bitrate محدد (خيارات افتراضية 128k و 320k)
-    audio_buttons = []
     if bitrates and len(bitrates) > 0:
         audio_buttons = [InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in bitrates[:2]]
     else:
@@ -193,6 +189,11 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
     rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
+
+def build_cancel_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 إلغاء التحميل الآن", callback_data="cancel_active_task")]
+    ])
 
 def get_direct_video_url(url):
     ydl_opts = {
@@ -220,31 +221,31 @@ def get_direct_video_url(url):
 
 # ---------------- تنزيل الملف ومتابعة التقدم الدوري ----------------
 
-async def edit_progress_message(status_msg, text):
+async def edit_progress_message(status_msg, text, reply_markup=None):
     try:
-        await status_msg.edit_caption(caption=text)
+        await status_msg.edit_caption(caption=text, reply_markup=reply_markup)
     except Exception:
         try:
-            await status_msg.edit_text(text)
+            await status_msg.edit_text(text, reply_markup=reply_markup)
         except Exception:
             pass
 
 def _progress_body(state):
     stage = state.get("stage", "downloading")
     if stage == "processing":
-        return "جاري معالجة الفيديو..."
+        return "جاري معالجة وتقليل حجم الفيديو..."
     percent = state.get("percent")
     if percent is not None:
         return build_progress_bar(percent)
     mb = (state.get("downloaded") or 0) / (1024 * 1024)
     return f"تم تحميل {mb:.1f} MB..."
 
-async def progress_ticker(status_msg, meta_caption, state):
+async def progress_ticker(status_msg, meta_caption, state, cancel_event):
     frame = 0
     last_text = None
     last_update_time = 0
     try:
-        while True:
+        while not cancel_event.is_set():
             frame = (frame + 1) % len(SPINNER_FRAMES)
             body = _progress_body(state)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {body}"
@@ -253,18 +254,24 @@ async def progress_ticker(status_msg, meta_caption, state):
             if text != last_text and (now - last_update_time) >= 2.0:
                 last_text = text
                 last_update_time = now
-                await edit_progress_message(status_msg, text)
+                await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
                 
             await asyncio.sleep(1.0)
     except asyncio.CancelledError:
         pass
 
-async def run_with_live_progress(func, args, status_msg, meta_caption, state):
+async def run_with_live_progress(func, args, status_msg, meta_caption, state, cancel_event):
     loop = asyncio.get_running_loop()
-    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state))
+    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event))
     try:
-        result = await loop.run_in_executor(None, func, *args)
-        return result
+        download_task = loop.run_in_executor(None, func, *args)
+        
+        while not download_task.done():
+            if cancel_event.is_set():
+                raise asyncio.CancelledError("تم إلغاء العملية من قبل المستخدم.")
+            await asyncio.sleep(0.5)
+            
+        return await download_task
     finally:
         ticker.cancel()
         try:
@@ -295,8 +302,11 @@ def _locate_downloaded_file(info, ydl, audio_only):
                 return os.path.join(directory, fname)
     return None
 
-def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, height=None, bitrate=None):
+def yt_dlp_download_with_progress(url, dest_template, state, cancel_event, audio_only=False, height=None, bitrate=None):
     def hook(d):
+        if cancel_event.is_set():
+            raise RuntimeError("CANCELLED")
+
         if d.get("status") == "downloading":
             state["stage"] = "downloading"
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
@@ -341,12 +351,19 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             "preferredquality": str(bitrate) if bitrate else "192",
         }]
     elif height:
-        ydl_opts["format"] = (
-            f"best[height<={height}][ext=mp4]/"
-            f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]/"
-            f"worst[ext=mp4]/worst/best"
-        )
+        # 🔥 الضغط وإعادة تحجيم الـ Bitrate لمنع تكرار حجم الفيديو في TikTok
+        if height <= 480:
+            target_bitrate = "800k"
+        elif height <= 720:
+            target_bitrate = "1500k"
+        else:
+            target_bitrate = "2500k"
+
+        ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+        if FFMPEG_AVAILABLE:
+            ydl_opts["postprocessor_args"] = {
+                "ffmpeg": ["-b:v", target_bitrate, "-maxrate", target_bitrate, "-bufsize", f"{int(target_bitrate[:-1])*2}k"]
+            }
     else:
         ydl_opts["format"] = "b[ext=mp4]/b/best"
 
@@ -423,16 +440,17 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_progress_placeholder(query, thumb_url, meta_caption):
     text = f"{meta_caption}\n\n{SPINNER_FRAMES[0]} جاري التحميل...\n{build_progress_bar(0)}"
+    reply_markup = build_cancel_keyboard()
     if thumb_url:
         try:
-            msg = await query.message.reply_photo(photo=thumb_url, caption=text)
+            msg = await query.message.reply_photo(photo=thumb_url, caption=text, reply_markup=reply_markup)
             await query.delete_message()
             return msg
         except Exception:
             pass
-    return await query.edit_message_text(text)
+    return await query.edit_message_text(text, reply_markup=reply_markup)
 
-async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, original_url, thumb_url=None, is_audio=False):
+async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, original_url, cancel_event, thumb_url=None, is_audio=False):
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     failed_direct = False
     try:
@@ -459,15 +477,18 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
         except asyncio.CancelledError:
             pass
 
+    if cancel_event.is_set():
+        return
+
     if failed_direct:
         dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
         state = {"stage": "downloading", "percent": None, "downloaded": 0}
         filepath, _ = await run_with_live_progress(
-            yt_dlp_download_with_progress, (original_url, dest_template, state, is_audio, None, None),
-            status_msg, meta_caption, state
+            yt_dlp_download_with_progress, (original_url, dest_template, state, cancel_event, is_audio, None, None),
+            status_msg, meta_caption, state, cancel_event
         )
         if filepath and os.path.exists(filepath):
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=is_audio)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, cancel_event, is_audio=is_audio)
         else:
             raise RuntimeError("تعذر تنزيل ملف الفيديو.")
         return
@@ -490,7 +511,7 @@ async def _sending_ticker(status_msg, meta_caption):
         while True:
             frame = (frame + 1) % len(SPINNER_FRAMES)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري الإرسال..."
-            await edit_progress_message(status_msg, text)
+            await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
             await asyncio.sleep(2.5)
     except asyncio.CancelledError:
         pass
@@ -503,7 +524,7 @@ async def upload_ticker(status_msg, meta_caption):
             frame = (frame + 1) % len(SPINNER_FRAMES)
             elapsed = int(time.time() - start)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري رفع الفيديو... ({elapsed} ث)"
-            await edit_progress_message(status_msg, text)
+            await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
             await asyncio.sleep(2.5)
     except asyncio.CancelledError:
         pass
@@ -523,7 +544,12 @@ async def send_with_retry(send_fn, max_attempts=3, base_delay=2):
             continue
     raise last_error
 
-async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
+async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, cancel_event, is_audio=False):
+    if cancel_event.is_set():
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return
+
     size_label = format_size(os.path.getsize(filepath)) if os.path.exists(filepath) else None
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
     if size_label:
@@ -557,7 +583,7 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
     except Exception:
         pass
 
-async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
+async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot, cancel_event):
     info = context.user_data.get('ytdlp_info')
     if not info:
         await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
@@ -574,9 +600,14 @@ async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
     dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
     state = {"stage": "downloading", "percent": None, "downloaded": 0}
     filepath, result_info = await run_with_live_progress(
-        yt_dlp_download_with_progress, (url, dest_template, state, False, height, None),
-        status_msg, meta_caption, state
+        yt_dlp_download_with_progress, (url, dest_template, state, cancel_event, False, height, None),
+        status_msg, meta_caption, state, cancel_event
     )
+
+    if cancel_event.is_set():
+        if filepath and os.path.exists(filepath):
+            os.remove(filepath)
+        return
 
     if not filepath or not os.path.exists(filepath):
         raise RuntimeError("تعذر العثور على الملف بهذه الجودة، جرب جودة أخرى.")
@@ -585,9 +616,9 @@ async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
     if actual_height and actual_height != height:
         meta_caption += f"\n⚠️ الجودة المطلوبة ({height}p) غير متاحة، تم الإرسال بأقرب جودة متاحة: {actual_height}p"
 
-    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
+    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, cancel_event, is_audio=False)
 
-async def handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot):
+async def handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot, cancel_event):
     info = context.user_data.get('ytdlp_info')
     if not info:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
@@ -603,14 +634,19 @@ async def handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
     dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
     state = {"stage": "downloading", "percent": None, "downloaded": 0}
     filepath, _ = await run_with_live_progress(
-        yt_dlp_download_with_progress, (url, dest_template, state, True, None, bitrate),
-        status_msg, meta_caption, state
+        yt_dlp_download_with_progress, (url, dest_template, state, cancel_event, True, None, bitrate),
+        status_msg, meta_caption, state, cancel_event
     )
+
+    if cancel_event.is_set():
+        if filepath and os.path.exists(filepath):
+            os.remove(filepath)
+        return
 
     if not filepath or not os.path.exists(filepath):
         raise RuntimeError("تعذر العثور على الملف بعد التحميل، جرب رابطاً آخر.")
 
-    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=True)
+    await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, cancel_event, is_audio=True)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -618,6 +654,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "action_cancel":
         await query.edit_message_text("❌ تم إلغاء الطلب.")
+        return
+
+    # 🛑 التعامل مع زر الإلغاء أثناء التنزيل والمعالجة النشطة
+    if query.data == "cancel_active_task":
+        cancel_event = context.user_data.get("active_cancel_event")
+        if cancel_event:
+            cancel_event.set()
+            await query.edit_message_text("🛑 تم إلغاء تحميل الفيديو بناءً على طلبك.")
+        else:
+            await query.edit_message_text("❌ لا توجد عملية جارية لإلغائها.")
         return
 
     url = context.user_data.get('download_url')
@@ -628,6 +674,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     bot = context.bot
     status_msg = None
+
+    # إنشاء حدث إلغاء جديد للعملية
+    cancel_event = asyncio.Event()
+    context.user_data["active_cancel_event"] = cancel_event
 
     try:
         if query.data.startswith("q_"):
@@ -642,12 +692,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             thumb = info.get("thumbnail")
             
-            # في حال توفر رابط مباشر نرسله، وإلا نقوم بتحميل الجودة المحددة
             if entry:
                 status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-                await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, url, thumb)
+                await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, url, cancel_event, thumb)
             else:
-                await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
+                await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot, cancel_event)
             return
 
         if query.data.startswith("qm_"):
@@ -655,13 +704,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ هذه الجودة تحتاج ffmpeg غير مثبت على السيرفر حالياً.")
                 return
             height = int(query.data.split("_")[1])
-            await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
+            await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot, cancel_event)
             return
 
-        # ✅ معالجة خيار تنزيل الصوت بـ MP3
         if query.data.startswith("a_"):
             bitrate = int(query.data.split("_")[1])
-            await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+            await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot, cancel_event)
             return
 
         if query.data == "v_instant":
@@ -680,9 +728,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ تعذر جلب رابط الفيديو المباشر، جرب رابطاً آخر.")
                 return
             status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-            await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, url, thumb)
+            await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, url, cancel_event, thumb)
             return
 
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         if status_msg is not None:
             try:
@@ -693,6 +743,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await bot.send_message(chat_id=chat_id, text=f"❌ **حدث خطأ:**\n`{str(e)[:150]}`", parse_mode='Markdown')
         except Exception:
             pass
+    finally:
+        context.user_data.pop("active_cancel_event", None)
 
 def main():
     request = HTTPXRequest(
