@@ -55,8 +55,8 @@ def format_file_size(filepath):
     if os.path.exists(filepath):
         size_bytes = os.path.getsize(filepath)
         size_mb = size_bytes / (1024 * 1024)
-        return f"{size_mb:.1f} MB"
-    return None
+        return size_mb, f"{size_mb:.1f} MB"
+    return 0, None
 
 def build_progress_bar(percent, length=12):
     percent = max(0, min(100, percent))
@@ -70,7 +70,7 @@ def format_duration(seconds):
         return None
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{m:02d}"
 
 def format_count(n):
     try:
@@ -86,7 +86,6 @@ def format_count(n):
 def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, quality=None):
     lines = []
     
-    # اسم الحساب باللون الأزرق (رابط تفاعلي)
     if uploader_id:
         uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
         lines.append(f"👤 الحساب: {uploader_link}")
@@ -113,7 +112,7 @@ def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=Non
         
     return "\n".join(lines)
 
-# ---------------- تجميع خيارات الجودة والصيغة ----------------
+# ---------------- تجميع خيارات الجودة ----------------
 
 def get_available_options(info):
     formats = info.get("formats") or []
@@ -182,8 +181,8 @@ def extract_info_only(url):
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "socket_timeout": 30,
-        "retries": 3,
+        "socket_timeout": 20,
+        "retries": 2,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         },
@@ -194,7 +193,7 @@ def extract_info_only(url):
 def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="video", height=None):
     def hook(d):
         if cancel_event.is_set():
-            raise RuntimeError("CANCELLED")
+            raise Exception("CANCELLED_BY_USER")
         if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             downloaded = d.get("downloaded_bytes", 0)
@@ -206,10 +205,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
-        "concurrent_fragment_downloads": 8,
+        "socket_timeout": 15,
+        "retries": 2,
+        "fragment_retries": 2,
+        "concurrent_fragment_downloads": 5,
         "progress_hooks": [hook],
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -226,15 +225,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             "preferredquality": "192",
         }]
     elif height:
-        ydl_opts["format"] = (
-            f"best[height<={height}][ext=mp4]/"
-            f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]/"
-            f"best"
-        )
+        ydl_opts["format"] = f"best[height<={height}][ext=mp4]/bestvideo[height<={height}]+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
     else:
-        ydl_opts["format"] = "best[ext=mp4]/bestvideo+bestaudio/b/best"
+        ydl_opts["format"] = "best[ext=mp4]/bestvideo+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -257,7 +251,7 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
 
         return final_file, info
 
-# ---------------- إدارة البث والتقدم ----------------
+# ---------------- إدارة البث والتحديث ----------------
 
 async def edit_progress_message(status_msg, text, reply_markup=None):
     try:
@@ -290,11 +284,11 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
                 last_update = now
                 await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
 
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.8)
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=300):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=180):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event))
     start_time = time.time()
@@ -302,23 +296,35 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
         download_task = loop.run_in_executor(None, func, *args)
         while not download_task.done():
             if cancel_event.is_set():
-                raise asyncio.CancelledError("تم الإلغاء.")
+                download_task.cancel()
+                raise asyncio.CancelledError("تم الإلغاء بواسطة المستخدم.")
             if time.time() - start_time > timeout:
                 cancel_event.set()
                 raise asyncio.TimeoutError("انتهت المهلة الزمنية للتحميل.")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
         return await download_task
     finally:
         ticker.cancel()
         try:
             await ticker
-        except asyncio.CancelledError:
+        except Exception:
             pass
 
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
-    file_size = format_file_size(filepath)
-    size_line = f"\n💾 الحجم: {file_size}" if file_size else ""
+    size_mb, file_size_str = format_file_size(filepath)
     
+    # فحص حجم الملف وتنبيه المستخدم إذا تجاوز الحد المسموح لتليجرام
+    if size_mb > 50:
+        await edit_progress_message(
+            status_msg,
+            f"{meta_caption}\n\n❌ **حجم الملف كبير جداً ({file_size_str})**.\nحد التحميل المسموح للبوتات هو 50MB.",
+            reply_markup=build_reselect_keyboard()
+        )
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return
+
+    size_line = f"\n💾 الحجم: {file_size_str}" if file_size_str else ""
     caption = f"{meta_caption}{size_line}\n\n✅ تم التحميل بنجاح!"
 
     try:
@@ -326,14 +332,12 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
             if is_audio:
                 await bot.send_audio(
                     chat_id=chat_id, audio=f, caption=caption,
-                    parse_mode='HTML',
-                    reply_markup=build_reselect_keyboard(), read_timeout=180
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(), read_timeout=120
                 )
             else:
                 await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption,
-                    parse_mode='HTML',
-                    reply_markup=build_reselect_keyboard(), supports_streaming=True, read_timeout=180
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(), supports_streaming=True, read_timeout=120
                 )
     finally:
         if os.path.exists(filepath):
@@ -347,21 +351,14 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
 
 def build_welcome_message(user):
     name = user.first_name or "صديقي"
-    username_line = f" (@{user.username})" if user.username else ""
-
     return (
-        f"👋 أهلاً بك <b>{name}</b>{username_line} في بوت التحميل!\n\n"
-        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك مباشرة، مع إمكانية اختيار الجودة والصيغة التي تناسبك.\n\n"
-        "🌐 <b>المنصات المدعومة:</b>\n"
-        "🎵 TikTok | 📸 Instagram | 📌 Pinterest | ▶️ YouTube | 🐦 X | 👍 Facebook\n\n"
-        "📎 فقط أرسل الرابط الآن وسأتولى الباقي!"
+        f"👋 أهلاً بك <b>{name}</b> في بوت التحميل!\n\n"
+        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك مباشرة.\n\n"
+        "🌐 <b>المنصات المدعومة:</b> TikTok, Instagram, YouTube, X, Facebook وغيرها."
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        build_welcome_message(update.effective_user),
-        parse_mode='HTML'
-    )
+    await update.message.reply_text(build_welcome_message(update.effective_user), parse_mode='HTML')
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -373,11 +370,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = clean_url(match.group(0))
     context.user_data['download_url'] = url
 
-    checking_msg = await update.message.reply_text("🔍 جاري جلب الجودات والصيغ المتاحة...")
+    checking_msg = await update.message.reply_text("🔍 جاري فحص الرابط والجودات...")
     try:
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
-            timeout=45
+            timeout=25
         )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
@@ -389,12 +386,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     except asyncio.TimeoutError:
-        await checking_msg.edit_text(
-            "⏱ استغرق تحليل الرابط وقتاً طويلاً جداً. حاول مجدداً لاحقاً.",
-        )
+        await checking_msg.edit_text("⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.")
     except Exception as e:
-        logging.exception("فشل تحليل الرابط: %s", url)
-        await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
+        await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:100]}`", parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -408,6 +402,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_event = context.user_data.get("active_cancel_event")
         if cancel_event:
             cancel_event.set()
+        await query.edit_message_text("🛑 تم إلغاء عملية التحميل.")
         return
 
     if query.data == "reselect_format":
@@ -447,7 +442,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancel_event = asyncio.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
-    status_msg = await query.edit_message_text(f"{meta_caption}\n\n⏳ جاري بدء التحميل السريع...", parse_mode='HTML')
+    status_msg = await query.edit_message_text(f"{meta_caption}\n\n⏳ جاري بدء التحميل...", parse_mode='HTML', reply_markup=build_cancel_keyboard())
 
     chat_id = query.message.chat_id
     bot = context.bot
@@ -478,19 +473,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
 
+    except (asyncio.CancelledError, RuntimeError):
+        pass
     except Exception as e:
         try:
-            await status_msg.edit_text(f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:150]}`", parse_mode='Markdown')
+            await status_msg.edit_text(f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:120]}`", parse_mode='Markdown')
         except Exception:
             pass
     finally:
         context.user_data.pop("active_cancel_event", None)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.error("حدث استثناء غير متوقع:", exc_info=context.error)
+    logging.error("حدث خطأ:", exc_info=context.error)
 
 def main():
-    request = HTTPXRequest(connect_timeout=30, read_timeout=180, write_timeout=180)
+    request = HTTPXRequest(connect_timeout=20, read_timeout=120, write_timeout=120)
     app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -498,7 +495,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(error_handler)
 
-    print("🚀 البوت يعمل وجاهز...")
+    print("🚀 البوت يعمل...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
