@@ -1,16 +1,15 @@
 import os
 import re
-import sys
 import time
 import logging
 import asyncio
 import threading
-import subprocess
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError, RetryAfter
 import yt_dlp
 
 # 🌐 سيرفر وهمي لفتح Port على Render
@@ -29,7 +28,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -40,128 +39,6 @@ SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 # قوائم الجودات المدعومة (تطابق الأزرار المطلوبة)
 VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
 AUDIO_BITRATES = [128, 64]
-
-# 🍪 مسار ملف كوكيز يوتيوب (اختياري) لتجاوز رسالة "Sign in to confirm you're not a bot"
-# التي تظهر أحياناً على سيرفرات الاستضافة (Render/Railway/إلخ). لإصلاحها:
-# 1) ثبّت إضافة مثل "Get cookies.txt LOCALLY" على متصفحك وسجّل الدخول ليوتيوب.
-# 2) صدّر كوكيز يوتيوب كملف cookies.txt وارفعه بجانب هذا الملف على السيرفر
-#    (أو كـ Secret File على Render مثلاً في /etc/secrets/cookies.txt).
-# 3) عيّن متغير بيئة باسم YOUTUBE_COOKIES_FILE يشير لمسار الملف الأصلي.
-#
-# ⚠️ ملاحظة مهمة: بعض منصات الاستضافة (مثل Render "Secret Files") تضع الملف
-# في مسار للقراءة فقط (read-only). لكن yt-dlp يحاول إعادة كتابة/تحديث الكوكيز
-# في نفس الملف بعد كل طلب، مما يسبب خطأ:
-#   [Errno 30] Read-only file system: '/etc/secrets/cookies.txt'
-# لحل هذا، ننسخ الملف عند بدء التشغيل إلى مسار قابل للكتابة داخل DOWNLOAD_DIR
-# ونستخدم هذه النسخة بدل الأصل المحمي.
-_RAW_YOUTUBE_COOKIES_FILE = os.environ.get("YOUTUBE_COOKIES_FILE")
-YOUTUBE_COOKIES_FILE = None
-
-
-def _prepare_writable_cookies_file():
-    """ينسخ ملف الكوكيز (الذي قد يكون للقراءة فقط) إلى مسار قابل للكتابة
-    داخل مجلد التنزيلات، حتى يستطيع yt-dlp تحديثه دون فشل."""
-    global YOUTUBE_COOKIES_FILE
-    if _RAW_YOUTUBE_COOKIES_FILE and os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
-        writable_path = os.path.join(DOWNLOAD_DIR, "cookies.txt")
-        try:
-            import shutil
-            shutil.copyfile(_RAW_YOUTUBE_COOKIES_FILE, writable_path)
-            YOUTUBE_COOKIES_FILE = writable_path
-            logging.info(f"تم نسخ ملف الكوكيز إلى مسار قابل للكتابة: {writable_path}")
-        except Exception as e:
-            logging.warning(f"تعذر نسخ ملف الكوكيز إلى مسار قابل للكتابة: {e}")
-            YOUTUBE_COOKIES_FILE = None
-
-
-_prepare_writable_cookies_file()
-
-# 🔍 رسالة تشخيصية واضحة عند الإقلاع لمعرفة سبب فشل الكوكيز مباشرة من اللوق
-if not _RAW_YOUTUBE_COOKIES_FILE:
-    logging.warning("⚠️ متغير البيئة YOUTUBE_COOKIES_FILE غير مضبوط إطلاقاً على هذا السيرفر.")
-elif not os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
-    logging.warning(f"⚠️ YOUTUBE_COOKIES_FILE مضبوط بالمسار '{_RAW_YOUTUBE_COOKIES_FILE}' لكن الملف غير موجود فعلياً هناك.")
-elif YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-    try:
-        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
-            _first_line = _f.readline().strip()
-        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
-            _lines_count = sum(1 for _ in _f)
-        logging.info(f"✅ تم تحميل ملف الكوكيز بنجاح ({_lines_count} سطر). أول سطر: '{_first_line[:40]}'")
-        if "Netscape" not in _first_line and not _first_line.startswith("#") and "\t" not in _first_line:
-            logging.warning("⚠️ ملف الكوكيز لا يبدو بصيغة Netscape القياسية — قد يفشل yt-dlp في قراءته.")
-    except Exception as _e:
-        logging.warning(f"⚠️ تعذرت قراءة ملف الكوكيز للتحقق منه: {_e}")
-else:
-    logging.warning("⚠️ فشل تجهيز نسخة قابلة للكتابة من ملف الكوكيز لسبب غير معروف.")
-
-
-# ---------------- تحديث yt-dlp تلقائياً عند كل إقلاع ----------------
-# يوتيوب يغيّر آليات حمايته ضد البوتات بشكل متكرر (أحياناً أسبوعياً)، ومطوّرو
-# yt-dlp يصدرون تحديثات لمواجهة ذلك. تثبيت نسخة قديمة هو أشيع سبب لظهور خطأ
-# "Sign in to confirm you're not a bot" حتى مع كوكيز صحيحة. لذلك نحاول تحديث
-# المكتبة تلقائياً في كل مرة يُقلع فيها البوت (عند كل Deploy/Restart على Render).
-def auto_update_yt_dlp():
-    global yt_dlp
-    try:
-        old_version = getattr(yt_dlp, "version", None)
-        old_version = getattr(old_version, "__version__", "غير معروف") if old_version else "غير معروف"
-        logging.info(f"🔄 جاري التحقق من تحديثات yt-dlp (النسخة الحالية: {old_version})...")
-
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "yt-dlp"],
-            capture_output=True, text=True, timeout=120,
-        )
-
-        if result.returncode != 0:
-            logging.warning(f"⚠️ فشل تحديث yt-dlp تلقائياً: {result.stderr[:300]}")
-            return
-
-        # إعادة تحميل موديول yt-dlp داخل نفس العملية لتفعيل النسخة الجديدة فوراً
-        import importlib
-        importlib.reload(yt_dlp)
-
-        new_version = getattr(yt_dlp, "version", None)
-        new_version = getattr(new_version, "__version__", "غير معروف") if new_version else "غير معروف"
-
-        if new_version != old_version:
-            logging.info(f"✅ تم تحديث yt-dlp من {old_version} إلى {new_version}.")
-        else:
-            logging.info(f"✅ yt-dlp محدّث بالفعل (النسخة: {new_version}).")
-    except subprocess.TimeoutExpired:
-        logging.warning("⚠️ انتهت مهلة تحديث yt-dlp (120 ثانية) — سيتم المتابعة بالنسخة الحالية.")
-    except Exception as e:
-        logging.warning(f"⚠️ تعذر تحديث yt-dlp تلقائياً: {e}")
-
-
-auto_update_yt_dlp()
-
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-
-def base_ydl_opts():
-    """خيارات yt-dlp مشتركة لكل الطلبات، تشمل محاولة تجاوز حماية يوتيوب ضد
-    البوتات عبر تجربة عدة عملاء (clients) مختلفة بالترتيب حتى ينجح أحدها،
-    مع دعم اختياري لملف كوكيز حقيقي إن توفر (أدق حل لكن يتطلب إعداداً يدوياً)."""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 60,
-        "retries": 3,
-        "http_headers": {"User-Agent": _UA},
-        "extractor_args": {
-            # نجرب عدة عملاء بالترتيب: tv و ios غالباً أقل عرضة لفحص
-            # "Sign in to confirm you're not a bot" من عميل web، وإن فشل
-            # أحدها ينتقل yt-dlp تلقائياً للتالي في القائمة.
-            "youtube": {"player_client": ["tv", "ios", "android", "web"]}
-        },
-    }
-    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-        opts["cookiefile"] = YOUTUBE_COOKIES_FILE
-    return opts
 
 
 def clean_url(url: str) -> str:
@@ -239,37 +116,87 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
     return "\n".join(lines)
 
 
+# ---------------- استخراج الجودات المتاحة فعلياً كروابط مباشرة (بدون تحميل) ----------------
+
+def get_direct_quality_map(info):
+    """يبني خريطة {الارتفاع: رابط مباشر} لكل صيغة فيديو+صوت مدمجين فعلياً
+    (vcodec و acodec كلاهما موجود)، لأن هذي فقط القابلة للإرسال المباشر
+    بمرحلة واحدة دون تحميل/دمج على السيرفر."""
+    formats = info.get("formats") or []
+    video_map = {}
+    for f in formats:
+        h = f.get("height")
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        url = f.get("url")
+        if h and url and vcodec not in (None, "none") and acodec not in (None, "none"):
+            current = video_map.get(h)
+            if not current or (f.get("tbr") or 0) > (current.get("tbr") or 0):
+                video_map[h] = {"url": url, "tbr": f.get("tbr") or 0}
+    return video_map
+
+
+def get_direct_audio_map(info):
+    """نفس الفكرة للصوت فقط: صيغ صوتية جاهزة (vcodec=none) برابط مباشر،
+    مصنّفة حسب البتريت الحقيقي المتوفر فعلاً."""
+    formats = info.get("formats") or []
+    audio_map = {}
+    for f in formats:
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        url = f.get("url")
+        abr = f.get("abr")
+        if url and vcodec in (None, "none") and acodec not in (None, "none") and abr:
+            key = int(round(abr))
+            current = audio_map.get(key)
+            if not current or (f.get("tbr") or 0) > (current.get("tbr") or 0):
+                audio_map[key] = {"url": url, "tbr": f.get("tbr") or 0}
+    return audio_map
+
+
 # ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
 
-def build_quality_keyboard_generic(heights=None):
-    """لوحة جودات يوتيوب/إنستغرام. إن توفرت قائمة heights حقيقية (من extract_info_only)
-    نعرض زراً واحداً فقط لكل دقة موجودة فعلاً (فيديو بدقة واحدة يظهر بزر واحد فقط)،
-    بدل عرض 6 أزرار وهمية دائماً."""
+def build_quality_keyboard_generic(heights=None, bitrates=None):
+    """لوحة جودات مبنية فقط من الجودات الحقيقية المتاحة كروابط مباشرة.
+    لا تُعرض أي جودة غير موجودة فعلياً، وكل زر هنا يُرسل بمرحلة واحدة."""
     rows = []
     if heights:
-        capped = heights[:6]  # سقف احتياطي لتفادي لوحة طويلة جداً
+        capped = heights[:6]
         buttons = [InlineKeyboardButton(f"🎬 {h}p", callback_data=f"q_{h}") for h in capped]
         for i in range(0, len(buttons), 3):
             rows.append(buttons[i:i + 3])
-    else:
-        # لم نتمكن من قراءة الصيغ (نادر) — نعرض القائمة القياسية كخيار احتياطي
-        for i in range(0, len(VIDEO_QUALITIES), 3):
-            chunk = VIDEO_QUALITIES[i:i + 3]
-            rows.append([InlineKeyboardButton(f"🎬 {q}p", callback_data=f"q_{q}") for q in chunk])
 
-    rows.append([
-        InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
-    ])
+    if bitrates:
+        rows.append([
+            InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in bitrates[:2]
+        ])
+
     rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+
+
 
 
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
 
 def get_direct_video_url(url):
     """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً."""
-    ydl_opts = {**base_ydl_opts(), "format": "b[ext=mp4]/b/best"}
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "b[ext=mp4]/b/best",
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         direct = info.get("url")
@@ -382,12 +309,20 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             state["stage"] = "processing"
 
     ydl_opts = {
-        **base_ydl_opts(),
+        "quiet": True,
+        "no_warnings": True,
         "outtmpl": dest_template,
+        "socket_timeout": 60,
         "retries": 5,
         "fragment_retries": 5,
         "merge_output_format": "mp4",
         "progress_hooks": [hook],
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
     }
 
     if audio_only:
@@ -420,7 +355,19 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
 
 
 def extract_info_only(url):
-    ydl_opts = {**base_ydl_opts(), "skip_download": True}
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -460,21 +407,27 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
     except Exception as e:
-        err_text = str(e)
-        if "Sign in to confirm" in err_text or "not a bot" in err_text:
-            await checking_msg.edit_text(
-                "❌ يوتيوب رفض الطلب مؤقتاً (فحص مكافحة البوتات).\n"
-                "هذا شائع على سيرفرات الاستضافة، ويُحل غالباً بإضافة ملف كوكيز "
-                "(YOUTUBE_COOKIES_FILE) — راجع الملاحظة أعلى الكود لمعرفة كيفية إعداده."
-            )
-        else:
-            await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{err_text[:150]}`", parse_mode='Markdown')
+        await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
         return
 
     context.user_data['ytdlp_info'] = info
-    heights = get_available_video_heights(info)
+    video_map = get_direct_quality_map(info)
+    audio_map = get_direct_audio_map(info)
+    context.user_data['direct_video_map'] = video_map
+    context.user_data['direct_audio_map'] = audio_map
+
+    heights = sorted(video_map.keys(), reverse=True)
+    bitrates = sorted(audio_map.keys(), reverse=True)
+
+    if heights:
+        qualities_text = "، ".join(f"{h}p" for h in heights[:6])
+        info_line = f"🎬 الجودات المتاحة (إرسال مباشر فوري): {qualities_text}"
+    else:
+        info_line = "🎬 لا توجد جودات كملف جاهز للإرسال المباشر، استخدم زر ⚡ الإرسال الفوري."
+
     await checking_msg.edit_text(
-        "👇 **اختر الجودة المتاحة فعلياً:**", reply_markup=build_quality_keyboard_generic(heights),
+        f"👇 **اختر الجودة:**\n{info_line}",
+        reply_markup=build_quality_keyboard_generic(heights, bitrates),
         parse_mode='Markdown'
     )
 
@@ -491,16 +444,23 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
     return await query.edit_message_text(text)
 
 
-async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None):
+async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None, is_audio=False):
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     try:
         # نجلب حجم الملف بالتوازي مع الإرسال حتى لا نؤخر الرفع من أجله
         size_task = asyncio.get_running_loop().run_in_executor(None, get_remote_file_size, direct_url)
-        sent_message = await bot.send_video(
-            chat_id=chat_id, video=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
-            supports_streaming=True,
-            read_timeout=180, write_timeout=180, connect_timeout=30,
-        )
+        async def _do_send():
+            if is_audio:
+                return await bot.send_audio(
+                    chat_id=chat_id, audio=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
+                    read_timeout=180, write_timeout=180, connect_timeout=30,
+                )
+            return await bot.send_video(
+                chat_id=chat_id, video=direct_url, caption=f"{meta_caption}\n\n✅ تم الإرسال بنجاح!",
+                supports_streaming=True,
+                read_timeout=180, write_timeout=180, connect_timeout=30,
+            )
+        sent_message = await send_with_retry(_do_send)
         size_label = await size_task
     finally:
         ticker.cancel()
@@ -548,6 +508,27 @@ async def upload_ticker(status_msg, meta_caption):
         pass
 
 
+async def send_with_retry(send_fn, max_attempts=4, base_delay=3):
+    """يعيد محاولة عملية الإرسال عند فشل الشبكة (مثل Gateway Timeout / TimedOut)
+    بدل إظهار الخطأ للمستخدم من أول فشل. send_fn هي دالة async بدون معاملات
+    (تُبنى عبر lambda/closure) لأن ملف الفيديو يجب فتحه من جديد كل محاولة."""
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await send_fn()
+        except RetryAfter as e:
+            # تليجرام يطلب صراحة الانتظار مدة معينة بسبب Rate Limit
+            await asyncio.sleep(e.retry_after + 1)
+            last_error = e
+        except (TimedOut, NetworkError) as e:
+            # يشمل هذا: Gateway Timeout / انقطاع الاتصال المؤقت
+            last_error = e
+            if attempt < max_attempts:
+                await asyncio.sleep(base_delay * attempt)  # تأخير تصاعدي بين المحاولات
+            continue
+    raise last_error
+
+
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     size_label = format_size(os.path.getsize(filepath)) if os.path.exists(filepath) else None
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
@@ -556,17 +537,18 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
 
     ticker = asyncio.create_task(upload_ticker(status_msg, meta_caption))
     try:
-        with open(filepath, "rb") as f:
-            if is_audio:
-                await bot.send_audio(
-                    chat_id=chat_id, audio=f, caption=caption,
-                    read_timeout=180, write_timeout=180, connect_timeout=30,
-                )
-            else:
-                await bot.send_video(
+        async def _do_send():
+            with open(filepath, "rb") as f:
+                if is_audio:
+                    return await bot.send_audio(
+                        chat_id=chat_id, audio=f, caption=caption,
+                        read_timeout=180, write_timeout=180, connect_timeout=30,
+                    )
+                return await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption, supports_streaming=True,
                     read_timeout=180, write_timeout=180, connect_timeout=30,
                 )
+        await send_with_retry(_do_send)
     finally:
         ticker.cancel()
         try:
@@ -657,16 +639,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = None
 
     try:
-        # 🎬 جودة فيديو محددة (نفس المنطق لكل المصادر: يوتيوب/إنستغرام/تيك توك...)
+        # 🎬 جودة فيديو محددة — إرسال مباشر بمرحلة واحدة (بدون تحميل على السيرفر)
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
-            await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
+            entry = (context.user_data.get('direct_video_map') or {}).get(height)
+            if not entry:
+                await query.edit_message_text("❌ انتهت صلاحية هذه الجودة، أرسل الرابط مجدداً.")
+                return
+            info = context.user_data.get('ytdlp_info') or {}
+            meta_caption = build_meta_caption(
+                uploader=info.get("uploader") or info.get("channel"),
+                duration=info.get("duration"),
+                views=info.get("view_count"),
+                title=info.get("title"),
+            )
+            thumb = info.get("thumbnail")
+            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+            await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, thumb)
             return
 
-        # 🎵 بتريت صوت محدد (128/64)
+        # 🎵 بتريت صوت محدد — إرسال مباشر بمرحلة واحدة أيضاً
         if query.data.startswith("a_"):
             bitrate = int(query.data.split("_")[1])
-            await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+            entry = (context.user_data.get('direct_audio_map') or {}).get(bitrate)
+            if not entry:
+                await query.edit_message_text("❌ انتهت صلاحية هذا البتريت، أرسل الرابط مجدداً.")
+                return
+            info = context.user_data.get('ytdlp_info') or {}
+            meta_caption = build_meta_caption(
+                uploader=info.get("uploader") or info.get("channel"),
+                duration=info.get("duration"),
+                views=info.get("view_count"),
+                title=info.get("title"),
+            )
+            thumb = info.get("thumbnail")
+            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+            await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, thumb, is_audio=True)
             return
 
         # ⚡ المسار السريع: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
