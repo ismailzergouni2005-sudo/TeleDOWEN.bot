@@ -70,7 +70,7 @@ def format_duration(seconds):
         return None
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{m:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 def format_count(n):
     try:
@@ -174,7 +174,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل ----------------
+# ---------------- منطق التحميل والدمج مع الصوت ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -205,9 +205,9 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 15,
-        "retries": 2,
-        "fragment_retries": 2,
+        "socket_timeout": 20,
+        "retries": 3,
+        "fragment_retries": 3,
         "concurrent_fragment_downloads": 5,
         "progress_hooks": [hook],
         "http_headers": {
@@ -225,10 +225,11 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             "preferredquality": "192",
         }]
     elif height:
-        ydl_opts["format"] = f"best[height<={height}][ext=mp4]/bestvideo[height<={height}]+bestaudio/best"
+        # إجبار دمج الصوت والفيديو معاً لتفادي المقاطع التي بدون صوت
+        ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
         ydl_opts["merge_output_format"] = "mp4"
     else:
-        ydl_opts["format"] = "best[ext=mp4]/bestvideo+bestaudio/best"
+        ydl_opts["format"] = "bestvideo+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -288,7 +289,7 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=180):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=240):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event))
     start_time = time.time()
@@ -313,7 +314,6 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
     size_mb, file_size_str = format_file_size(filepath)
     
-    # فحص حجم الملف وتنبيه المستخدم إذا تجاوز الحد المسموح لتليجرام
     if size_mb > 50:
         await edit_progress_message(
             status_msg,
