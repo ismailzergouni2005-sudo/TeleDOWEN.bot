@@ -1,9 +1,11 @@
 import os
 import re
+import sys
 import time
 import logging
 import asyncio
 import threading
+import subprocess
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -92,6 +94,47 @@ elif YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
         logging.warning(f"⚠️ تعذرت قراءة ملف الكوكيز للتحقق منه: {_e}")
 else:
     logging.warning("⚠️ فشل تجهيز نسخة قابلة للكتابة من ملف الكوكيز لسبب غير معروف.")
+
+
+# ---------------- تحديث yt-dlp تلقائياً عند كل إقلاع ----------------
+# يوتيوب يغيّر آليات حمايته ضد البوتات بشكل متكرر (أحياناً أسبوعياً)، ومطوّرو
+# yt-dlp يصدرون تحديثات لمواجهة ذلك. تثبيت نسخة قديمة هو أشيع سبب لظهور خطأ
+# "Sign in to confirm you're not a bot" حتى مع كوكيز صحيحة. لذلك نحاول تحديث
+# المكتبة تلقائياً في كل مرة يُقلع فيها البوت (عند كل Deploy/Restart على Render).
+def auto_update_yt_dlp():
+    try:
+        old_version = getattr(yt_dlp, "version", None)
+        old_version = getattr(old_version, "__version__", "غير معروف") if old_version else "غير معروف"
+        logging.info(f"🔄 جاري التحقق من تحديثات yt-dlp (النسخة الحالية: {old_version})...")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "yt-dlp"],
+            capture_output=True, text=True, timeout=120,
+        )
+
+        if result.returncode != 0:
+            logging.warning(f"⚠️ فشل تحديث yt-dlp تلقائياً: {result.stderr[:300]}")
+            return
+
+        # إعادة تحميل موديول yt-dlp داخل نفس العملية لتفعيل النسخة الجديدة فوراً
+        import importlib
+        global yt_dlp
+        importlib.reload(yt_dlp)
+
+        new_version = getattr(yt_dlp, "version", None)
+        new_version = getattr(new_version, "__version__", "غير معروف") if new_version else "غير معروف"
+
+        if new_version != old_version:
+            logging.info(f"✅ تم تحديث yt-dlp من {old_version} إلى {new_version}.")
+        else:
+            logging.info(f"✅ yt-dlp محدّث بالفعل (النسخة: {new_version}).")
+    except subprocess.TimeoutExpired:
+        logging.warning("⚠️ انتهت مهلة تحديث yt-dlp (120 ثانية) — سيتم المتابعة بالنسخة الحالية.")
+    except Exception as e:
+        logging.warning(f"⚠️ تعذر تحديث yt-dlp تلقائياً: {e}")
+
+
+auto_update_yt_dlp()
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
