@@ -29,10 +29,10 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# معرف الصورة الترحيبية ذات الأبعاد والجودة العالية
-WELCOME_IMAGE_ID = "AgACAgQAAxkBAAEtNs5qciLOfZ1UzlctM8F9NwvnAYDkvAACzg5rG-dUkFOywrODZo8YEwEAAwIAA3kAAz0E"
+# رابط الصورة الترحيبية المباشر
+WELCOME_IMAGE_URL = "https://i.imgur.com/XMGRjta.jpeg"
 
-# معرف الملصق المتحرك الترحيبي
+# معرف الملصق المتحرك الترحيبي الخاص بك
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
 
 DOWNLOAD_DIR = "downloads"
@@ -377,26 +377,28 @@ def build_welcome_message(user):
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. إرسال صورة الشعارات الترحيبية مع النص أسفلها
+    welcome_text = build_welcome_message(update.effective_user)
+    
+    # 1. إرسال الصورة الترحيبية عبر الرابط المباشر
     try:
         await update.message.reply_photo(
-            photo=WELCOME_IMAGE_ID,
-            caption=build_welcome_message(update.effective_user),
+            photo=WELCOME_IMAGE_URL,
+            caption=welcome_text,
             parse_mode='HTML'
         )
     except Exception as e:
-        logging.error(f"فشل إرسال الصورة: {e}")
+        logging.error(f"خطأ في إرسال الصورة: {e}")
         await update.message.reply_text(
-            build_welcome_message(update.effective_user),
+            text=welcome_text,
             parse_mode='HTML',
             disable_web_page_preview=True
         )
     
-    # 2. إرسال الملصق المتحرك بعدها مباشرة
+    # 2. إرسال الملصق المتحرك بعدها
     try:
         await update.message.reply_sticker(sticker=WELCOME_STICKER_ID)
     except Exception as e:
-        logging.error(f"فشل إرسال الملصق الترحيبي: {e}")
+        logging.error(f"خطأ في إرسال الملصق: {e}")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
