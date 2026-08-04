@@ -29,11 +29,11 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# رابط صورة موثوق ويعمل عالمياً بدون حظر جغرافي
-WELCOME_IMAGE_URL = "https://raw.githubusercontent.com/telegramdesktop/tdesktop/dev/Telegram/Resources/art/bg.jpg"
+# ⚠️ ضع الرابط المباشر لصورتك الخاصة هنا (من موقع Catbox أو ImgBB)
+WELCOME_IMAGE_URL = "https://files.catbox.moe/xxxxxx.png"
 
 # معرف الملصق المتحرك الترحيبي
-WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
+WELCOME_STICKER_ID = "file:///C:/Users/user/Downloads/photo_2026-08-04_19-42-03.jpg"
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -379,7 +379,7 @@ def build_welcome_message(user):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = build_welcome_message(update.effective_user)
     
-    # 1. إرسال الصورة الترحيبية عبر رابط مباشر ومستقر
+    # 1. إرسال الصورة الترحيبية
     try:
         await update.message.reply_photo(
             photo=WELCOME_IMAGE_URL,
