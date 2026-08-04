@@ -131,7 +131,8 @@ def get_direct_quality_map(info):
         vcodec = f.get("vcodec")
         acodec = f.get("acodec")
         url = f.get("url")
-        if h and url and vcodec not in (None, "none") and acodec not in (None, "none"):
+        # دعم جودات تيك توك التي قد تفقد acodec في البداية أحياناً
+        if h and url and vcodec not in (None, "none"):
             current = video_map.get(h)
             if not current or (f.get("tbr") or 0) > (current.get("tbr") or 0):
                 video_map[h] = {"url": url, "tbr": f.get("tbr") or 0}
@@ -178,10 +179,16 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
         for i in range(0, len(buttons), 3):
             rows.append(buttons[i:i + 3])
 
-    if bitrates and FFMPEG_AVAILABLE:
-        rows.append([
-            InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in bitrates[:2]
-        ])
+    # ✅ إظهار أزرار تحميل الصوت حتى لو لم يتوفر bitrate محدد (خيارات افتراضية 128k و 320k)
+    audio_buttons = []
+    if bitrates and len(bitrates) > 0:
+        audio_buttons = [InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in bitrates[:2]]
+    else:
+        audio_buttons = [
+            InlineKeyboardButton("🎵 MP3 (128 kbps)", callback_data="a_128"),
+            InlineKeyboardButton("🎵 MP3 (320 kbps)", callback_data="a_320")
+        ]
+    rows.append(audio_buttons)
 
     rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
@@ -403,15 +410,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
     if heights:
         qualities_text = "، ".join(f"{h}p" for h in heights[:6])
-        lines.append(f"🎬 جودات فورية (إرسال مباشر بدون انتظار): {qualities_text}")
+        lines.append(f"🎬 جودات فورية: {qualities_text}")
     if merge_heights:
         merge_text = "، ".join(f"{h}p" for h in merge_heights[:6])
-        lines.append(f"🎞️ جودات تحتاج دمج فيديو+صوت (أبطأ قليلاً): {merge_text}")
-    if not heights and not merge_heights:
-        lines.append("🎬 لا توجد جودات محددة، استخدم زر ⚡ الإرسال الفوري.")
+        lines.append(f"🎞️ جودات دمج: {merge_text}")
 
     await checking_msg.edit_text(
-        "👇 **اختر الجودة:**\n" + "\n".join(lines),
+        "👇 **اختر الجودة أو خيار الصوت:**\n" + "\n".join(lines),
         reply_markup=build_quality_keyboard_generic(heights, bitrates, merge_heights),
         parse_mode='Markdown'
     )
@@ -427,7 +432,6 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
             pass
     return await query.edit_message_text(text)
 
-# ✅ إصلاح مشكلة "Wrong type of the web page content" عبر تجربة التنزيل المحلي عند فشل الإرسال المباشر
 async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, original_url, thumb_url=None, is_audio=False):
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     failed_direct = False
@@ -446,8 +450,7 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
             )
         sent_message = await send_with_retry(_do_send)
         size_label = await size_task
-    except Exception as e:
-        # إذا رفض تليجرام الرابط المباشر، تحول تلقائياً للتنزيل محلياً ثم الرفع
+    except Exception:
         failed_direct = True
     finally:
         ticker.cancel()
@@ -457,7 +460,6 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
             pass
 
     if failed_direct:
-        # التنزيل محلياً لضمان إرسال ملف الفيديو الحقيقي بدلاً من رابط الويب
         dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
         state = {"stage": "downloading", "percent": None, "downloaded": 0}
         filepath, _ = await run_with_live_progress(
@@ -631,9 +633,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
             entry = (context.user_data.get('direct_video_map') or {}).get(height)
-            if not entry:
-                await query.edit_message_text("❌ انتهت صلاحية هذه الجودة، أرسل الرابط مجدداً.")
-                return
             info = context.user_data.get('ytdlp_info') or {}
             meta_caption = build_meta_caption(
                 uploader=info.get("uploader") or info.get("channel"),
@@ -642,8 +641,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title=info.get("title"),
             )
             thumb = info.get("thumbnail")
-            status_msg = await send_progress_placeholder(query, thumb, meta_caption)
-            await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, url, thumb)
+            
+            # في حال توفر رابط مباشر نرسله، وإلا نقوم بتحميل الجودة المحددة
+            if entry:
+                status_msg = await send_progress_placeholder(query, thumb, meta_caption)
+                await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, url, thumb)
+            else:
+                await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
         if query.data.startswith("qm_"):
@@ -654,10 +658,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
+        # ✅ معالجة خيار تنزيل الصوت بـ MP3
         if query.data.startswith("a_"):
-            if not FFMPEG_AVAILABLE:
-                await query.edit_message_text("❌ تحميل الصوت يحتاج ffmpeg غير مثبت على السيرفر حالياً.")
-                return
             bitrate = int(query.data.split("_")[1])
             await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
             return
