@@ -28,7 +28,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
+TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
