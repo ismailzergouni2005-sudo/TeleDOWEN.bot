@@ -42,12 +42,18 @@ if not FFMPEG_PATH:
 
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
+# منصات غالباً توفر جودة واحدة حقيقية فقط -> نتجاوز لوحة الاختيار ونحمّل مباشرة لأقصى سرعة
+FAST_PLATFORMS = ("instagram.com", "pinterest.com", "pin.it")
+
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
         match = re.search(r'(https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+)', url)
         if match:
             return match.group(1) + "/"
     return url
+
+def is_fast_platform(url: str) -> bool:
+    return any(p in url for p in FAST_PLATFORMS)
 
 # ---------------- أدوات التنسيق والواجهة ----------------
 
@@ -267,6 +273,58 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
 
         return final_file, info
 
+def yt_dlp_fast_single_pass(url, dest_template, state, cancel_event):
+    """
+    مسار سريع لإنستغرام/بنترست: استخراج + تحميل في عملية واحدة فقط،
+    بصيغة مدمجة جاهزة (بدون تحميل فيديو وصوت منفصلين ثم دمجهما بـ ffmpeg)،
+    مع مهلات زمنية قصيرة ومحاولات أقل وتحميل أجزاء متوازٍ لأقصى سرعة.
+    """
+    def hook(d):
+        if cancel_event.is_set():
+            raise RuntimeError("CANCELLED")
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+            state["downloaded"] = downloaded
+            if total:
+                state["percent"] = downloaded / total * 100
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "outtmpl": dest_template,
+        "socket_timeout": 15,
+        "retries": 2,
+        "fragment_retries": 2,
+        "concurrent_fragment_downloads": 8,
+        "progress_hooks": [hook],
+        # صيغة مدمجة جاهزة أولاً (الحالة الشائعة في IG/Pinterest) لتفادي أي دمج ffmpeg لاحق،
+        # مع fallback بسيط فقط عند الحاجة
+        "format": "best[ext=mp4]/best/bestvideo+bestaudio",
+        "merge_output_format": "mp4",
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        },
+    }
+    if FFMPEG_PATH:
+        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+
+        final_file = filename
+        if not os.path.exists(final_file):
+            base_no_ext, _ = os.path.splitext(filename)
+            directory = os.path.dirname(base_no_ext) or "."
+            base_name = os.path.basename(base_no_ext)
+            for fname in os.listdir(directory):
+                if fname.startswith(base_name):
+                    final_file = os.path.join(directory, fname)
+                    break
+
+        return final_file, info
+
 # ---------------- إدارة البث المباشر والتقدم ----------------
 
 async def edit_progress_message(status_msg, text, reply_markup=None):
@@ -362,6 +420,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = clean_url(match.group(0))
     context.user_data['download_url'] = url
 
+    # مسار سريع: إنستغرام/بنترست غالباً جودة واحدة فقط -> تحميل فوري بدون لوحة اختيار
+    if is_fast_platform(url):
+        await fast_download_flow(update.message, context, url)
+        return
+
     checking_msg = await update.message.reply_text("🔍 جاري جلب الجودات والصيغ المتاحة...")
     try:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
@@ -376,6 +439,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
+
+async def fast_download_flow(message, context, url):
+    """تحميل وإرسال فوري بأقصى سرعة، بعملية استخراج+تحميل واحدة فقط (بدون لوحة جودات)."""
+    cancel_event = asyncio.Event()
+    context.user_data["active_cancel_event"] = cancel_event
+
+    status_msg = await message.reply_text("⚡ جاري التحميل بأقصى سرعة...")
+    state = {"percent": None, "downloaded": 0}
+    dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
+
+    try:
+        filepath, info = await run_with_progress(
+            yt_dlp_fast_single_pass, (url, dest_template, state, cancel_event),
+            status_msg, "⚡ تحميل سريع", state, cancel_event
+        )
+        meta_caption = build_meta_caption(
+            uploader=info.get("uploader") or info.get("channel"),
+            duration=info.get("duration"),
+            views=info.get("view_count"),
+            title=info.get("title"),
+            quality="أفضل جودة متاحة"
+        )
+        await send_final_file(context.bot, message.chat_id, status_msg, filepath, meta_caption, is_audio=False)
+    except Exception as e:
+        try:
+            await status_msg.edit_text(f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:150]}`", parse_mode='Markdown')
+        except Exception:
+            pass
+    finally:
+        context.user_data.pop("active_cancel_event", None)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
