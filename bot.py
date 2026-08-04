@@ -29,7 +29,10 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# معرف الملصق المتحرك الترحيبي الخاص بك
+# معرف الصورة الترحيبية ذات الأبعاد والجودة العالية
+WELCOME_IMAGE_ID = "AgACAgQAAxkBAAEtNs5qciLOfZ1UzlctM8F9NwvnAYDkvAACzg5rG-dUkFOywrODZo8YEwEAAwIAA3kAAz0E"
+
+# معرف الملصق المتحرك الترحيبي
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
 
 DOWNLOAD_DIR = "downloads"
@@ -374,12 +377,20 @@ def build_welcome_message(user):
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. إرسال الرسالة الترحيبية المزخرفة
-    await update.message.reply_text(
-        build_welcome_message(update.effective_user),
-        parse_mode='HTML',
-        disable_web_page_preview=True
-    )
+    # 1. إرسال صورة الشعارات الترحيبية مع النص أسفلها
+    try:
+        await update.message.reply_photo(
+            photo=WELCOME_IMAGE_ID,
+            caption=build_welcome_message(update.effective_user),
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logging.error(f"فشل إرسال الصورة: {e}")
+        await update.message.reply_text(
+            build_welcome_message(update.effective_user),
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
     
     # 2. إرسال الملصق المتحرك بعدها مباشرة
     try:
