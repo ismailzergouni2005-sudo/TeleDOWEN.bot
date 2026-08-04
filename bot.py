@@ -51,6 +51,13 @@ def clean_url(url: str) -> str:
 
 # ---------------- أدوات التنسيق والواجهة ----------------
 
+def format_file_size(filepath):
+    if os.path.exists(filepath):
+        size_bytes = os.path.getsize(filepath)
+        size_mb = size_bytes / (1024 * 1024)
+        return f"{size_mb:.1f} MB"
+    return None
+
 def build_progress_bar(percent, length=12):
     percent = max(0, min(100, percent))
     filled = int(length * percent / 100)
@@ -60,7 +67,7 @@ def format_duration(seconds):
     try:
         seconds = int(seconds)
     except (TypeError, ValueError):
-        return "غير معروف"
+        return None
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
@@ -69,7 +76,7 @@ def format_count(n):
     try:
         n = int(n)
     except (TypeError, ValueError):
-        return "غير معروف"
+        return None
     if n >= 1_000_000:
         return f"{n/1_000_000:.1f}M"
     if n >= 1_000:
@@ -79,35 +86,54 @@ def format_count(n):
 def build_meta_caption(uploader=None, duration=None, views=None, title=None, quality=None):
     lines = []
     if title:
-        title_short = title if len(title) <= 60 else title[:57] + "..."
+        title_clean = title.split('\n')[0]
+        title_short = title_clean if len(title_clean) <= 50 else title_clean[:47] + "..."
         lines.append(f"📝 {title_short}")
+        
     lines.append(f"👤 الحساب: {uploader or 'غير معروف'}")
-    lines.append(f"⏱ المدة: {format_duration(duration) if duration else 'غير معروف'}")
-    lines.append(f"👁 المشاهدات: {format_count(views) if views is not None else 'غير معروف'}")
+    
+    formatted_duration = format_duration(duration)
+    if formatted_duration:
+        lines.append(f"⏱ المدة: {formatted_duration}")
+        
+    formatted_views = format_count(views)
+    if formatted_views and views != 0:
+        lines.append(f"👁 المشاهدات: {formatted_views}")
+        
     if quality:
         lines.append(f"🎬 الجودة/الصيغة: {quality}")
+        
     return "\n".join(lines)
 
 # ---------------- تجميع خيارات الجودة والصيغة ----------------
 
 def get_available_options(info):
-    """
-    يبني قائمة جودات حقيقية ومختلفة فعلياً (استناداً إلى height)،
-    بدون أي تقدير للحجم (تم إلغاء عرض الحجم التقريبي).
-    """
     formats = info.get("formats") or []
     candidates = {}
 
     for f in formats:
         h = f.get("height")
+        if not h and f.get("resolution"):
+            res_match = re.search(r'\d+x(\d+)', str(f.get("resolution")))
+            if res_match:
+                h = int(res_match.group(1))
+
         vcodec = f.get("vcodec")
         ext = f.get("ext", "mp4")
-        if not h or vcodec in (None, "none"):
+        
+        if not h or vcodec == "none":
             continue
-        # نحتفظ بأفضل امتداد متاح لكل دقة (نفضل mp4 إن وجد)
+
         prev = candidates.get(h)
         if prev is None or (ext == "mp4" and prev.get("ext") != "mp4"):
             candidates[h] = {"ext": ext}
+
+    if not candidates:
+        height_from_info = info.get("height")
+        if height_from_info:
+            candidates[height_from_info] = {"ext": "mp4"}
+        else:
+            return {1080: {"ext": "mp4"}, 720: {"ext": "mp4"}, 480: {"ext": "mp4"}}
 
     return candidates
 
@@ -141,7 +167,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل (سريع، عملية واحدة فقط) ----------------
+# ---------------- منطق التحميل ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -192,14 +218,11 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             "preferredquality": "192",
         }]
     elif height:
-        # نفضل صيغة مدمجة جاهزة أولاً (بدون دمج ffmpeg) لتفادي إبطاء العملية،
-        # مع الحفاظ على تقييد الجودة المختارة في كل مسار fallback.
         ydl_opts["format"] = (
             f"best[height<={height}][ext=mp4]/"
-            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
             f"bestvideo[height<={height}]+bestaudio/"
             f"best[height<={height}]/"
-            f"worst"
+            f"best"
         )
         ydl_opts["merge_output_format"] = "mp4"
     else:
@@ -226,7 +249,7 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
 
         return final_file, info
 
-# ---------------- إدارة البث المباشر والتقدم ----------------
+# ---------------- إدارة البث والتقدم ----------------
 
 async def edit_progress_message(status_msg, text, reply_markup=None):
     try:
@@ -285,7 +308,10 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
             pass
 
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
-    caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
+    file_size = format_file_size(filepath)
+    size_line = f"\n💾 الحجم: {file_size}" if file_size else ""
+    
+    caption = f"{meta_caption}{size_line}\n\n✅ تم التحميل بنجاح!"
 
     try:
         with open(filepath, "rb") as f:
@@ -307,7 +333,7 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         except Exception:
             pass
 
-# ---------------- معالجات الأوامر والأحداث ----------------
+# ---------------- معالجات الأوامر ----------------
 
 def build_welcome_message(user):
     name = user.first_name or "صديقي"
@@ -317,20 +343,7 @@ def build_welcome_message(user):
         f"👋 أهلاً بك <b>{name}</b>{username_line} في بوت التحميل!\n\n"
         "أرسل لي رابط أي فيديو وسأقوم بتحميله لك مباشرة، مع إمكانية اختيار الجودة والصيغة التي تناسبك.\n\n"
         "🌐 <b>المنصات المدعومة:</b>\n"
-        "🎵 TikTok\n"
-        "📸 Instagram (ريلز ومنشورات وفيديوهات)\n"
-        "📌 Pinterest\n"
-        "▶️ YouTube\n"
-        "🐦 X / Twitter\n"
-        "👍 Facebook\n"
-        "🔗 ومنصات أخرى كثيرة\n\n"
-        "⚙️ <b>المزايا:</b>\n"
-        "🎬 اختيار الجودة المناسبة (من أعلى دقة إلى أقل دقة)\n"
-        "🎵 استخراج الصوت بصيغة MP3\n"
-        "⚡ خيار التحميل الفوري بأفضل جودة متاحة\n"
-        "📊 شريط تقدم مباشر أثناء التحميل\n"
-        "🛑 إمكانية إلغاء التحميل في أي وقت\n"
-        "🔄 إعادة اختيار صيغة أخرى لنفس الرابط بعد التحميل\n\n"
+        "🎵 TikTok | 📸 Instagram | 📌 Pinterest | ▶️ YouTube | 🐦 X | 👍 Facebook\n\n"
         "📎 فقط أرسل الرابط الآن وسأتولى الباقي!"
     )
 
@@ -367,7 +380,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except asyncio.TimeoutError:
         await checking_msg.edit_text(
-            "⏱ استغرق تحليل الرابط وقتاً طويلاً جداً (قد يكون الموقع يحجب الطلبات). حاول مجدداً لاحقاً.",
+            "⏱ استغرق تحليل الرابط وقتاً طويلاً جداً. حاول مجدداً لاحقاً.",
         )
     except Exception as e:
         logging.exception("فشل تحليل الرابط: %s", url)
@@ -463,8 +476,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("active_cancel_event", None)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """يطبع أي استثناء غير متوقع في الـ logs بدل ما يختفي بصمت."""
-    logging.error("حدث استثناء غير متوقع أثناء معالجة تحديث:", exc_info=context.error)
+    logging.error("حدث استثناء غير متوقع:", exc_info=context.error)
 
 def main():
     request = HTTPXRequest(connect_timeout=30, read_timeout=180, write_timeout=180)
@@ -475,7 +487,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(error_handler)
 
-    print("🚀 البوت يعمل وجاهز لمعالجة جميع الروابط مع عرض خيارات الجودة...")
+    print("🚀 البوت يعمل وجاهز...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
