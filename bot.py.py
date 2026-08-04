@@ -28,7 +28,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -69,6 +69,18 @@ def format_duration(seconds):
     return f"{m:02d}:{s:02d}"
 
 
+def format_size(num_bytes):
+    try:
+        num_bytes = float(num_bytes)
+    except (TypeError, ValueError):
+        return None
+    if num_bytes <= 0:
+        return None
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{num_bytes / 1024:.0f} KB"
+
+
 def format_count(n):
     try:
         n = int(n)
@@ -94,9 +106,10 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
 
 # ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
 
-def build_quality_keyboard():
-    """يبني لوحة أزرار الجودات على شكل شبكة 3x2 للفيديو + صف لبتريت الصوت،
-    بنفس شكل اللقطة المرفقة (1080p/720p/480p/360p/240p/144p + 128kbps/64kbps)"""
+def build_quality_keyboard_generic():
+    """لوحة الجودات القياسية (يوتيوب/إنستغرام عبر yt-dlp) — شبكة 3x2 للفيديو
+    + صف لبتريت الصوت، بنفس شكل اللقطة المرفقة. الجودة الفعلية المُسلَّمة قد
+    تختلف قليلاً إن لم تتوفر بالضبط، وستظهر في وصف الفيديو بعد التحميل."""
     rows = []
     for i in range(0, len(VIDEO_QUALITIES), 3):
         chunk = VIDEO_QUALITIES[i:i + 3]
@@ -107,6 +120,38 @@ def build_quality_keyboard():
         InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
     ])
     rows.append([InlineKeyboardButton("⚡ أفضل جودة (إرسال فوري)", callback_data="v_instant")])
+    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_quality_keyboard_tiktok(data):
+    """تيك توك عبر TikWM يوفر فعلياً نسختين مختلفتين فقط من الفيديو (HD و SD)،
+    وليس 6 مستويات دقة كما في يوتيوب. لذا نعرض الخيارات الحقيقية فقط مع حجمها
+    الفعلي بدل الإيحاء بوجود جودات غير موجودة فعلاً."""
+    hd_url = data.get("hdplay")
+    sd_url = data.get("play")
+    hd_size = format_size(data.get("hd_size") or data.get("hdsize"))
+    sd_size = format_size(data.get("size") or data.get("wm_size"))
+
+    rows = []
+    video_row = []
+    if hd_url:
+        label = "🎬 جودة عالية (HD)" + (f" · {hd_size}" if hd_size else "")
+        video_row.append(InlineKeyboardButton(label, callback_data="th"))
+    # لا نعرض زر SD منفصلاً إن كان بنفس رابط HD (يعني تيك توك لا يوفر نسخة أخرى فعلياً)
+    if sd_url and sd_url != hd_url:
+        label = "🎬 جودة عادية (SD)" + (f" · {sd_size}" if sd_size else "")
+        video_row.append(InlineKeyboardButton(label, callback_data="ts"))
+    if video_row:
+        rows.append(video_row)
+    elif sd_url:
+        # لا يوجد سوى رابط واحد متاح فعلياً
+        rows.append([InlineKeyboardButton("🎬 تحميل الفيديو", callback_data="th")])
+
+    rows.append([
+        InlineKeyboardButton(f"🎵 {b}kbps", callback_data=f"a_{b}") for b in AUDIO_BITRATES
+    ])
+    rows.append([InlineKeyboardButton("⚡ إرسال فوري", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -125,14 +170,6 @@ def get_tiktok_data(tiktok_url):
     if data.get("code") == 0:
         return data["data"]
     return None
-
-
-def tiktok_url_for_height(data, height):
-    """تيك توك عبر TikWM لا يوفر أحجاماً دقيقة (فقط HD/SD)،
-    لذا نربط الجودات العليا بـ hdplay والدنيا بـ play كأقرب مطابقة متاحة"""
-    if height >= 480:
-        return data.get("hdplay") or data.get("play")
-    return data.get("play") or data.get("hdplay")
 
 
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
@@ -323,11 +360,16 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             "preferredquality": str(bitrate) if bitrate else "192",
         }]
     elif height:
-        # نطلب أفضل نسخة لا يتجاوز ارتفاعها القيمة المطلوبة، مع بديل دمج فيديو+صوت
+        # نطلب أفضل نسخة لا يتجاوز ارتفاعها القيمة المطلوبة، مع بدائل متسلسلة:
+        # 1) ملف جاهز (فيديو+صوت) بالحد الأقصى المطلوب
+        # 2) دمج فيديو+صوت بالحد الأقصى المطلوب
+        # 3) أقرب جودة أعلى متاحة (بعض المصادر مثل الريلز توفر دقة واحدة فقط)
+        # 4) أضعف جودة متاحة كملاذ أخير حتى لا يفشل التحميل نهائياً
         ydl_opts["format"] = (
             f"best[height<={height}][ext=mp4]/"
             f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]"
+            f"best[height<={height}]/"
+            f"worst[ext=mp4]/worst/best"
         )
     else:
         ydl_opts["format"] = "b[ext=mp4]/b/best"
@@ -372,9 +414,23 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = clean_url(url_match.group(0))
     context.user_data['download_url'] = url
+    context.user_data.pop('tiktok_data', None)
+
+    if "tiktok.com" in url:
+        checking_msg = await update.message.reply_text("🔍 جاري تحليل الرابط...")
+        data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+        if not data:
+            await checking_msg.edit_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+            return
+        context.user_data['tiktok_data'] = data
+        await checking_msg.edit_text(
+            "👇 **اختر الجودة المتاحة فعلياً:**", reply_markup=build_quality_keyboard_tiktok(data),
+            parse_mode='Markdown'
+        )
+        return
 
     await update.message.reply_text(
-        "👇 **اختر الجودة:**", reply_markup=build_quality_keyboard(), parse_mode='Markdown'
+        "👇 **اختر الجودة:**", reply_markup=build_quality_keyboard_generic(), parse_mode='Markdown'
     )
 
 
@@ -469,12 +525,8 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         pass
 
 
-async def handle_tiktok_video_quality(query, context, url, height, chat_id, bot):
-    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-    if not data:
-        await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-        return
-
+async def handle_tiktok_video_pick(query, context, data, which, chat_id, bot):
+    """which: 'hd' أو 'sd' — يستخدم الرابط الحقيقي المطابق تماماً لما اختاره المستخدم"""
     author = data.get("author", {}) or {}
     meta_caption = build_meta_caption(
         uploader=author.get("nickname") or author.get("unique_id"),
@@ -483,7 +535,11 @@ async def handle_tiktok_video_quality(query, context, url, height, chat_id, bot)
         title=data.get("title"),
     )
     thumb = data.get("origin_cover") or data.get("cover")
-    direct_url = tiktok_url_for_height(data, height)
+    if which == "hd":
+        direct_url = data.get("hdplay") or data.get("play")
+    else:
+        direct_url = data.get("play") or data.get("hdplay")
+
     if not direct_url:
         await query.edit_message_text("❌ تعذر جلب الرابط المباشر لهذه الجودة.")
         return
@@ -492,12 +548,7 @@ async def handle_tiktok_video_quality(query, context, url, height, chat_id, bot)
     await send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb)
 
 
-async def handle_tiktok_audio_bitrate(query, context, url, bitrate, chat_id, bot):
-    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
-    if not data:
-        await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
-        return
-
+async def handle_tiktok_audio_bitrate(query, context, data, bitrate, chat_id, bot):
     author = data.get("author", {}) or {}
     meta_caption = build_meta_caption(
         uploader=author.get("nickname") or author.get("unique_id"),
@@ -547,13 +598,17 @@ async def handle_ytdlp_video_quality(query, context, url, height, chat_id, bot):
     status_msg = await send_progress_placeholder(query, thumb, meta_caption)
     dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
     state = {"stage": "downloading", "percent": None, "downloaded": 0}
-    filepath, _ = await run_with_live_progress(
+    filepath, result_info = await run_with_live_progress(
         yt_dlp_download_with_progress, (url, dest_template, state, False, height, None),
         status_msg, meta_caption, state
     )
 
     if not filepath or not os.path.exists(filepath):
         raise RuntimeError("تعذر العثور على الملف بهذه الجودة، جرب جودة أخرى.")
+
+    actual_height = (result_info or {}).get("height")
+    if actual_height and actual_height != height:
+        meta_caption += f"\n⚠️ الجودة المطلوبة ({height}p) غير متاحة، تم الإرسال بأقرب جودة متاحة: {actual_height}p"
 
     await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
 
@@ -601,20 +656,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_tiktok = "tiktok.com" in url
 
     try:
-        # 🎬 جودة فيديو محددة (1080/720/480/360/240/144)
+        # 🎬 تيك توك: جودة حقيقية واحدة (HD) أو (SD) — مطابقة تماماً لما يعرضه الزر
+        if query.data in ("th", "ts"):
+            data = context.user_data.get('tiktok_data')
+            if not data:
+                data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+            if not data:
+                await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+                return
+            which = "hd" if query.data == "th" else "sd"
+            await handle_tiktok_video_pick(query, context, data, which, chat_id, bot)
+            return
+
+        # 🎬 جودة فيديو محددة ليوتيوب/إنستغرام (1080/720/480/360/240/144)
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
-            if is_tiktok:
-                await handle_tiktok_video_quality(query, context, url, height, chat_id, bot)
-            else:
-                await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
+            await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
         # 🎵 بتريت صوت محدد (128/64)
         if query.data.startswith("a_"):
             bitrate = int(query.data.split("_")[1])
             if is_tiktok:
-                await handle_tiktok_audio_bitrate(query, context, url, bitrate, chat_id, bot)
+                data = context.user_data.get('tiktok_data')
+                if not data:
+                    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+                if not data:
+                    await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
+                    return
+                await handle_tiktok_audio_bitrate(query, context, data, bitrate, chat_id, bot)
             else:
                 await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
             return
@@ -622,7 +692,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ⚡ المسار السريع الأصلي: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
         if query.data == "v_instant":
             if is_tiktok:
-                data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
+                data = context.user_data.get('tiktok_data')
+                if not data:
+                    data = await asyncio.get_running_loop().run_in_executor(None, get_tiktok_data, url)
                 if not data:
                     await query.edit_message_text("❌ تعذر جلب مقطع تيك توك، تأكد من صحة الرابط.")
                     return
