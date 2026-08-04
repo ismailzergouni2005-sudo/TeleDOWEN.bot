@@ -27,7 +27,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -38,6 +38,39 @@ SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 # قوائم الجودات المدعومة (تطابق الأزرار المطلوبة)
 VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
 AUDIO_BITRATES = [128, 64]
+
+# 🍪 مسار ملف كوكيز يوتيوب (اختياري) لتجاوز رسالة "Sign in to confirm you're not a bot"
+# التي تظهر أحياناً على سيرفرات الاستضافة (Render/Railway/إلخ). لإصلاحها:
+# 1) ثبّت إضافة مثل "Get cookies.txt LOCALLY" على متصفحك وسجّل الدخول ليوتيوب.
+# 2) صدّر كوكيز يوتيوب كملف cookies.txt وارفعه بجانب هذا الملف على السيرفر.
+# 3) عيّن متغير بيئة باسم YOUTUBE_COOKIES_FILE يشير لمسار الملف (مثال: /app/cookies.txt).
+YOUTUBE_COOKIES_FILE = os.environ.get("YOUTUBE_COOKIES_FILE")
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def base_ydl_opts():
+    """خيارات yt-dlp مشتركة لكل الطلبات، تشمل محاولة تجاوز حماية يوتيوب ضد
+    البوتات عبر انتحال شخصية تطبيق يوتيوب على أندرويد (لا يحتاج كوكيز غالباً)،
+    مع دعم اختياري لملف كوكيز حقيقي إن توفر (أدق حل لكن يتطلب إعداداً يدوياً)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {"User-Agent": _UA},
+        "extractor_args": {
+            # انتحال تطبيق أندرويد يتجاوز فحص "Sign in to confirm you're not a bot"
+            # في كثير من الحالات لأن يوتيوب يطبّق الفحص بشكل أساسي على متصفح الويب
+            "youtube": {"player_client": ["android", "web"]}
+        },
+    }
+    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        opts["cookiefile"] = YOUTUBE_COOKIES_FILE
+    return opts
 
 
 def clean_url(url: str) -> str:
@@ -141,27 +174,11 @@ def build_quality_keyboard_generic(heights=None):
     return InlineKeyboardMarkup(rows)
 
 
-
-
-
-
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
 
 def get_direct_video_url(url):
     """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً."""
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "b[ext=mp4]/b/best",
-        "socket_timeout": 60,
-        "retries": 3,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    ydl_opts = {**base_ydl_opts(), "format": "b[ext=mp4]/b/best"}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         direct = info.get("url")
@@ -274,20 +291,12 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             state["stage"] = "processing"
 
     ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+        **base_ydl_opts(),
         "outtmpl": dest_template,
-        "socket_timeout": 60,
         "retries": 5,
         "fragment_retries": 5,
         "merge_output_format": "mp4",
         "progress_hooks": [hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
     }
 
     if audio_only:
@@ -320,19 +329,7 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
 
 
 def extract_info_only(url):
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "socket_timeout": 60,
-        "retries": 3,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    ydl_opts = {**base_ydl_opts(), "skip_download": True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -372,7 +369,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
     except Exception as e:
-        await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
+        err_text = str(e)
+        if "Sign in to confirm" in err_text or "not a bot" in err_text:
+            await checking_msg.edit_text(
+                "❌ يوتيوب رفض الطلب مؤقتاً (فحص مكافحة البوتات).\n"
+                "هذا شائع على سيرفرات الاستضافة، ويُحل غالباً بإضافة ملف كوكيز "
+                "(YOUTUBE_COOKIES_FILE) — راجع الملاحظة أعلى الكود لمعرفة كيفية إعداده."
+            )
+        else:
+            await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{err_text[:150]}`", parse_mode='Markdown')
         return
 
     context.user_data['ytdlp_info'] = info
