@@ -125,8 +125,7 @@ def build_quality_keyboard(video_opts):
         rows.append(buttons[i:i + 2])
 
     rows.append([
-        InlineKeyboardButton("🎵 MP3 (صوت فقط)", callback_data="a_mp3"),
-        InlineKeyboardButton("🎵 M4A (صوت أصلي)", callback_data="a_m4a")
+        InlineKeyboardButton("🎵 MP3 (صوت فقط)", callback_data="a_mp3")
     ])
     rows.append([InlineKeyboardButton("⚡ أفضل جودة مباشرة", callback_data="v_instant")])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
@@ -192,8 +191,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }]
-    elif mode == "m4a":
-        ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
         # نفضل صيغة مدمجة جاهزة أولاً (بدون دمج ffmpeg) لتفادي إبطاء العملية،
         # مع الحفاظ على تقييد الجودة المختارة في كل مسار fallback.
@@ -312,8 +309,36 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
 
 # ---------------- معالجات الأوامر والأحداث ----------------
 
+def build_welcome_message(user):
+    name = user.first_name or "صديقي"
+    username_line = f" (@{user.username})" if user.username else ""
+
+    return (
+        f"👋 أهلاً بك <b>{name}</b>{username_line} في بوت التحميل!\n\n"
+        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك مباشرة، مع إمكانية اختيار الجودة والصيغة التي تناسبك.\n\n"
+        "🌐 <b>المنصات المدعومة:</b>\n"
+        "🎵 TikTok\n"
+        "📸 Instagram (ريلز ومنشورات وفيديوهات)\n"
+        "📌 Pinterest\n"
+        "▶️ YouTube\n"
+        "🐦 X / Twitter\n"
+        "👍 Facebook\n"
+        "🔗 ومنصات أخرى كثيرة\n\n"
+        "⚙️ <b>المزايا:</b>\n"
+        "🎬 اختيار الجودة المناسبة (من أعلى دقة إلى أقل دقة)\n"
+        "🎵 استخراج الصوت بصيغة MP3\n"
+        "⚡ خيار التحميل الفوري بأفضل جودة متاحة\n"
+        "📊 شريط تقدم مباشر أثناء التحميل\n"
+        "🛑 إمكانية إلغاء التحميل في أي وقت\n"
+        "🔄 إعادة اختيار صيغة أخرى لنفس الرابط بعد التحميل\n\n"
+        "📎 فقط أرسل الرابط الآن وسأتولى الباقي!"
+    )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✨ أهلاً بك! أرسل لي أي رابط لتنزيله بالصيغة والجودة التي تفضلها 🚀")
+    await update.message.reply_text(
+        build_welcome_message(update.effective_user),
+        parse_mode='HTML'
+    )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -384,8 +409,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quality_str = f"{height}p"
     elif query.data == "a_mp3":
         quality_str = "MP3 (صوت)"
-    elif query.data == "a_m4a":
-        quality_str = "M4A (صوت أصلي)"
     elif query.data == "v_instant":
         quality_str = "أفضل جودة متاحة"
 
