@@ -5,12 +5,10 @@ import shutil
 import logging
 import asyncio
 import threading
-import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import TimedOut, NetworkError, RetryAfter
 import yt_dlp
 
 app = Flask('')
@@ -89,7 +87,6 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-# ✏️ التعديل هنا: إضافة معيار quality للوصف
 def build_meta_caption(uploader=None, duration=None, views=None, title=None, quality=None):
     lines = []
     if title:
@@ -148,7 +145,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل بنمط المرحلة الواحدة ----------------
+# ---------------- منطق التحميل والحل لدعم بنترست ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -199,9 +196,9 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     elif mode == "m4a":
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
-        ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/best"
+        ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/bestvideo+bestaudio/best"
     else:
-        ydl_opts["format"] = "b[ext=mp4]/b/best"
+        ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -364,7 +361,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info = context.user_data.get('ytdlp_info') or {}
     
-    # ✏️ تحديد نص الجودة حسْب الخيار المختار
     quality_str = None
     if query.data.startswith("q_"):
         height = query.data.split("_")[1]
@@ -434,7 +430,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل مع عرض سطر الجودة في وصف الفيديو...")
+    print("🚀 البوت يعمل مع الدعم الشامل لجميع المنصات...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
