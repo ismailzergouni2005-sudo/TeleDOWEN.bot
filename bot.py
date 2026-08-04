@@ -29,10 +29,7 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# رابط الصورة الترحيبية المباشر من Catbox
 WELCOME_IMAGE_URL = "https://files.catbox.moe/heevbw.jpg"
-
-# معرف الملصق المتحرك الترحيبي الخاص بك
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
 
 DOWNLOAD_DIR = "downloads"
@@ -47,6 +44,95 @@ if not FFMPEG_PATH:
         FFMPEG_PATH = None
 
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+
+# ---------------- النصوص متعددة اللغات ----------------
+
+TEXTS = {
+    "ar": {
+        "welcome": (
+            "✨ أهلاً وسهلاً بك يا ✦ {user_link} ✦\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
+            "أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
+            "🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
+            "<code> ▌ T I K T O K </code>\n"
+            "<code> ▌ I N S T A G R A M </code>\n"
+            "<code> ▌ P I N T E R E S T </code>\n"
+            "<code> ▌ F A C E B O O K </code>\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
+        ),
+        "invalid_url": "❌ يرجى إرسال رابط صحيح.",
+        "checking": "🔍 جاري فحص الرابط والجودات...",
+        "choose_format": "👇 **اختر الصيغة والجودة المطلوبة:**",
+        "timeout": "⏱ استغرق فحص الرابط وقتاً طولاً. أعد المحاولة لاحقاً.",
+        "analyze_error": "❌ تعذر تحليل الرابط:\n`{error}`",
+        "account": "👤 الحساب",
+        "unknown": "غير معروف",
+        "description": "📝 الوصف",
+        "duration": "⏱ المدة",
+        "views": "👁 المشاهدات",
+        "quality": "🎬 الجودة/الصيغة",
+        "best_quality": "أفضل جودة متاحة",
+        "audio_only": "MP3 (صوت فقط)",
+        "instant": "⚡ أفضل جودة مباشرة",
+        "cancel": "❌ إلغاء",
+        "cancel_download": "🛑 إلغاء التحميل",
+        "reselect": "🔄 اختيار صيغة أخرى",
+        "cancelled": "🛑 تم إلغاء عملية التحميل.",
+        "expired": "❌ انتهت الجلسة، أرسل الرابط مجدداً.",
+        "downloading": "⏳ جاري بدء التحميل...",
+        "processing": "جاري التحميل والمعالجة...",
+        "downloaded_mb": "تم تحميل {mb:.1f} MB...",
+        "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد التحميل المسموح للبوتات هو 50MB.",
+        "success": "✅ تم التحميل بنجاح!",
+        "size": "💾 الحجم",
+        "download_error": "❌ **حدث خطأ أثناء التحميل:**\n`{error}`"
+    },
+    "en": {
+        "welcome": (
+            "✨ Welcome ✦ {user_link} ✦\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<blockquote><b> ⚡ Welcome to Fast Downloader Bot! ⚡ </b></blockquote>\n\n"
+            "I'm here to help you download videos and audio clips in the highest possible quality.\n\n"
+            "🌐 <b><u>Currently Supported Platforms:</u></b>\n\n"
+            "<code> ▌ T I K T O K </code>\n"
+            "<code> ▌ I N S T A G R A M </code>\n"
+            "<code> ▌ P I N T E R E S T </code>\n"
+            "<code> ▌ F A C E B O O K </code>\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚡ <i>Just send any video link now!</i>"
+        ),
+        "invalid_url": "❌ Please send a valid link.",
+        "checking": "🔍 Checking link and qualities...",
+        "choose_format": "👇 **Select the desired format and quality:**",
+        "timeout": "⏱ Checking took too long. Please try again later.",
+        "analyze_error": "❌ Failed to analyze link:\n`{error}`",
+        "account": "👤 Account",
+        "unknown": "Unknown",
+        "description": "📝 Description",
+        "duration": "⏱ Duration",
+        "views": "👁 Views",
+        "quality": "🎬 Quality/Format",
+        "best_quality": "Best quality available",
+        "audio_only": "🎵 MP3 (Audio Only)",
+        "instant": "⚡ Best Quality Direct",
+        "cancel": "❌ Cancel",
+        "cancel_download": "🛑 Cancel Download",
+        "reselect": "🔄 Choose Another Format",
+        "cancelled": "🛑 Download process cancelled.",
+        "expired": "❌ Session expired, please send the link again.",
+        "downloading": "⏳ Starting download...",
+        "processing": "Downloading and processing...",
+        "downloaded_mb": "Downloaded {mb:.1f} MB...",
+        "too_large": "❌ **File size too large ({size})**.\nTelegram bot limit is 50MB.",
+        "success": "✅ Downloaded successfully!",
+        "size": "💾 Size",
+        "download_error": "❌ **An error occurred during download:**\n`{error}`"
+    }
+}
 
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
@@ -89,33 +175,34 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, description=None, quality=None):
+def build_meta_caption(lang, uploader=None, uploader_id=None, duration=None, views=None, title=None, description=None, quality=None):
+    t = TEXTS[lang]
     lines = []
     
     if uploader_id:
         uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
-        lines.append(f"👤 الحساب: {uploader_link}")
+        lines.append(f"{t['account']}: {uploader_link}")
     elif uploader:
-        lines.append(f"👤 الحساب: <b>{uploader}</b>")
+        lines.append(f"{t['account']}: <b>{uploader}</b>")
     else:
-        lines.append("👤 الحساب: غير معروف")
+        lines.append(f"{t['account']}: {t['unknown']}")
 
     text_content = description or title
     if text_content:
         clean_text = text_content.strip().split('\n')[0]
         short_text = clean_text if len(clean_text) <= 80 else clean_text[:77] + "..."
-        lines.append(f"📝 الوصف: {short_text}")
+        lines.append(f"{t['description']}: {short_text}")
         
     formatted_duration = format_duration(duration)
     if formatted_duration:
-        lines.append(f"⏱ المدة: {formatted_duration}")
+        lines.append(f"{t['duration']}: {formatted_duration}")
         
     formatted_views = format_count(views)
     if formatted_views and views != 0:
-        lines.append(f"👁 المشاهدات: {formatted_views}")
+        lines.append(f"{t['views']}: {formatted_views}")
         
     if quality:
-        lines.append(f"🎬 الجودة/الصيغة: {quality}")
+        lines.append(f"{t['quality']}: {quality}")
         
     return "\n".join(lines)
 
@@ -151,7 +238,8 @@ def get_available_options(info):
 
     return candidates
 
-def build_quality_keyboard(video_opts):
+def build_quality_keyboard(lang, video_opts):
+    t = TEXTS[lang]
     rows = []
     heights = sorted(video_opts.keys(), reverse=True)[:6]
 
@@ -165,23 +253,25 @@ def build_quality_keyboard(video_opts):
         rows.append(buttons[i:i + 2])
 
     rows.append([
-        InlineKeyboardButton("🎵 MP3 (صوت فقط)", callback_data="a_mp3")
+        InlineKeyboardButton(t["audio_only"], callback_data="a_mp3")
     ])
-    rows.append([InlineKeyboardButton("⚡ أفضل جودة مباشرة", callback_data="v_instant")])
-    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="action_cancel")])
+    rows.append([InlineKeyboardButton(t["instant"], callback_data="v_instant")])
+    rows.append([InlineKeyboardButton(t["cancel"], callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
 
-def build_cancel_keyboard():
+def build_cancel_keyboard(lang):
+    t = TEXTS[lang]
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛑 إلغاء التحميل", callback_data="cancel_active_task")]
+        [InlineKeyboardButton(t["cancel_download"], callback_data="cancel_active_task")]
     ])
 
-def build_reselect_keyboard():
+def build_reselect_keyboard(lang):
+    t = TEXTS[lang]
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
+        [InlineKeyboardButton(t["reselect"], callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل والدمج مع الصوت ----------------
+# ---------------- منطق التحميل والدمج ----------------
 
 TWITTER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -270,7 +360,8 @@ async def edit_progress_message(status_msg, text, reply_markup=None):
         except Exception:
             pass
 
-async def progress_ticker(status_msg, meta_caption, state, cancel_event):
+async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
+    t = TEXTS[lang]
     frame = 0
     last_text = None
     last_update = 0
@@ -282,33 +373,33 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event):
                 body = build_progress_bar(percent)
             else:
                 mb = (state.get("downloaded") or 0) / (1024 * 1024)
-                body = f"تم تحميل {mb:.1f} MB..."
+                body = t["downloaded_mb"].format(mb=mb)
 
-            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري التحميل والمعالجة...\n{body}"
+            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {t['processing']}\n{body}"
 
             now = time.time()
             if text != last_text and (now - last_update) >= 2.0:
                 last_text = text
                 last_update = now
-                await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard())
+                await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard(lang))
 
             await asyncio.sleep(0.8)
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, timeout=240):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=240):
     loop = asyncio.get_running_loop()
-    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event))
+    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang))
     start_time = time.time()
     try:
         download_task = loop.run_in_executor(None, func, *args)
         while not download_task.done():
             if cancel_event.is_set():
                 download_task.cancel()
-                raise asyncio.CancelledError("تم الإلغاء بواسطة المستخدم.")
+                raise asyncio.CancelledError("Cancelled by user.")
             if time.time() - start_time > timeout:
                 cancel_event.set()
-                raise asyncio.TimeoutError("انتهت المهلة الزمنية للتحميل.")
+                raise asyncio.TimeoutError("Download timeout.")
             await asyncio.sleep(0.3)
         return await download_task
     finally:
@@ -318,33 +409,34 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
         except Exception:
             pass
 
-async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
+async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False):
+    t = TEXTS[lang]
     size_mb, file_size_str = format_file_size(filepath)
     
     if size_mb > 50:
         await edit_progress_message(
             status_msg,
-            f"{meta_caption}\n\n❌ **حجم الملف كبير جداً ({file_size_str})**.\nحد التحميل المسموح للبوتات هو 50MB.",
-            reply_markup=build_reselect_keyboard()
+            f"{meta_caption}\n\n{t['too_large'].format(size=file_size_str)}",
+            reply_markup=build_reselect_keyboard(lang)
         )
         if os.path.exists(filepath):
             os.remove(filepath)
         return
 
-    size_line = f"\n💾 الحجم: {file_size_str}" if file_size_str else ""
-    caption = f"{meta_caption}{size_line}\n\n✅ تم التحميل بنجاح!"
+    size_line = f"\n{t['size']}: {file_size_str}" if file_size_str else ""
+    caption = f"{meta_caption}{size_line}\n\n{t['success']}"
 
     try:
         with open(filepath, "rb") as f:
             if is_audio:
                 await bot.send_audio(
                     chat_id=chat_id, audio=f, caption=caption,
-                    parse_mode='HTML', reply_markup=build_reselect_keyboard(), read_timeout=120
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang), read_timeout=120
                 )
             else:
                 await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption,
-                    parse_mode='HTML', reply_markup=build_reselect_keyboard(), supports_streaming=True, read_timeout=120
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang), supports_streaming=True, read_timeout=120
                 )
     finally:
         if os.path.exists(filepath):
@@ -354,62 +446,64 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         except Exception:
             pass
 
-# ---------------- معالجات الأوامر والرسالة الترحيبية المميزة ----------------
+# ---------------- اختيار اللغة والأوامر الترحيبية ----------------
 
-def build_welcome_message(user):
-    name = user.first_name or "المستخدم"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # خيارات اختيار اللغة مع الأعلام
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🇩🇿 العربية", callback_data="lang_ar"),
+            InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")
+        ]
+    ])
+    await update.message.reply_text(
+        "🌐 **الرجاء اختيار اللغة / Please select your language:**",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def send_welcome(query, context: ContextTypes.DEFAULT_TYPE, lang: str):
+    t = TEXTS[lang]
+    user = query.from_user
+    name = user.first_name or "User"
     user_id = user.id
     
     blue_user_link = f'<a href="tg://user?id={user_id}">« {name} »</a>'
-
-    return (
-        f"✨ أهلاً وسهلاً بك يا ✦ {blue_user_link} ✦\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
-        f"أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
-        f"🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
-        f"<code> ▌ T I K T O K </code>\n"
-        f"<code> ▌ I N S T A G R A M </code>\n"
-        f"<code> ▌ P I N T E R E S T </code>\n"
-        f"<code> ▌ F A C E B O O K </code>\n"
-        f"<code> ▌ X ( T W I T T E R ) </code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
-    )
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = build_welcome_message(update.effective_user)
+    welcome_text = t["welcome"].format(user_link=blue_user_link)
     
     try:
-        await update.message.reply_photo(
+        await query.message.reply_photo(
             photo=WELCOME_IMAGE_URL,
             caption=welcome_text,
             parse_mode='HTML'
         )
     except Exception as e:
-        logging.error(f"خطأ في إرسال الصورة: {e}")
-        await update.message.reply_text(
+        logging.error(f"Error sending photo: {e}")
+        await query.message.reply_text(
             text=welcome_text,
             parse_mode='HTML',
             disable_web_page_preview=True
         )
     
     try:
-        await update.message.reply_sticker(sticker=WELCOME_STICKER_ID)
+        await query.message.reply_sticker(sticker=WELCOME_STICKER_ID)
     except Exception as e:
-        logging.error(f"خطأ في إرسال الملصق: {e}")
+        logging.error(f"Error sending sticker: {e}")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "ar")
+    t = TEXTS[lang]
+
     text = update.message.text.strip()
     match = re.search(r'https?://[^\s]+', text)
     if not match:
-        await update.message.reply_text("❌ يرجى إرسال رابط صحيح.")
+        await update.message.reply_text(t["invalid_url"])
         return
 
     url = clean_url(match.group(0))
     context.user_data['download_url'] = url
 
-    checking_msg = await update.message.reply_text("🔍 جاري فحص الرابط والجودات...")
+    checking_msg = await update.message.reply_text(t["checking"])
     try:
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
@@ -420,18 +514,29 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['video_opts'] = video_opts
 
         await checking_msg.edit_text(
-            "👇 **اختر الصيغة والجودة المطلوبة:**",
-            reply_markup=build_quality_keyboard(video_opts),
+            t["choose_format"],
+            reply_markup=build_quality_keyboard(lang, video_opts),
             parse_mode='Markdown'
         )
     except asyncio.TimeoutError:
-        await checking_msg.edit_text("⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.")
+        await checking_msg.edit_text(t["timeout"])
     except Exception as e:
-        await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:100]}`", parse_mode='Markdown')
+        await checking_msg.edit_text(t["analyze_error"].format(error=str(e)[:100]), parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # معالجة اختيار اللغة
+    if query.data in ["lang_ar", "lang_en"]:
+        lang = "ar" if query.data == "lang_ar" else "en"
+        context.user_data["lang"] = lang
+        await query.delete_message()
+        await send_welcome(query, context, lang)
+        return
+
+    lang = context.user_data.get("lang", "ar")
+    t = TEXTS[lang]
 
     if query.data == "action_cancel":
         await query.delete_message()
@@ -441,21 +546,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_event = context.user_data.get("active_cancel_event")
         if cancel_event:
             cancel_event.set()
-        await query.edit_message_text("🛑 تم إلغاء عملية التحميل.")
+        await query.edit_message_text(t["cancelled"])
         return
 
     if query.data == "reselect_format":
         video_opts = context.user_data.get('video_opts') or {}
         await query.message.reply_text(
-            "👇 **اختر الصيغة والجودة المطلوبة:**",
-            reply_markup=build_quality_keyboard(video_opts),
+            t["choose_format"],
+            reply_markup=build_quality_keyboard(lang, video_opts),
             parse_mode='Markdown'
         )
         return
 
     url = context.user_data.get('download_url')
     if not url:
-        await query.edit_message_text("❌ انتهت الجلسة، أرسل الرابط مجدداً.")
+        await query.edit_message_text(t["expired"])
         return
 
     info = context.user_data.get('ytdlp_info') or {}
@@ -465,11 +570,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         height = query.data.split("_")[1]
         quality_str = f"{height}p"
     elif query.data == "a_mp3":
-        quality_str = "MP3 (صوت)"
+        quality_str = t["audio_only"]
     elif query.data == "v_instant":
-        quality_str = "أفضل جودة متاحة"
+        quality_str = t["best_quality"]
 
     meta_caption = build_meta_caption(
+        lang=lang,
         uploader=info.get("uploader") or info.get("channel"),
         uploader_id=info.get("uploader_id") or info.get("channel_id"),
         duration=info.get("duration"),
@@ -482,7 +588,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancel_event = asyncio.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
-    status_msg = await query.edit_message_text(f"{meta_caption}\n\n⏳ جاري بدء التحميل...", parse_mode='HTML', reply_markup=build_cancel_keyboard())
+    status_msg = await query.edit_message_text(f"{meta_caption}\n\n{t['downloading']}", parse_mode='HTML', reply_markup=build_cancel_keyboard(lang))
 
     chat_id = query.message.chat_id
     bot = context.bot
@@ -494,30 +600,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             height = int(query.data.split("_")[1])
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", height),
-                status_msg, meta_caption, state, cancel_event
+                status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
 
         elif query.data.startswith("a_"):
             mode = query.data.split("_")[1]
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, mode, None),
-                status_msg, meta_caption, state, cancel_event
+                status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=True)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=True)
 
         elif query.data == "v_instant":
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", None),
-                status_msg, meta_caption, state, cancel_event
+                status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
 
     except (asyncio.CancelledError, RuntimeError):
         pass
     except Exception as e:
         try:
-            await status_msg.edit_text(f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:120]}`", parse_mode='Markdown')
+            await status_msg.edit_text(t["download_error"].format(error=str(e)[:120]), parse_mode='Markdown')
         except Exception:
             pass
     finally:
