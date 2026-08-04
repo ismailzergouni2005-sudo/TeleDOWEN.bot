@@ -89,7 +89,8 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-def build_meta_caption(uploader=None, duration=None, views=None, title=None):
+# ✏️ التعديل هنا: إضافة معيار quality للوصف
+def build_meta_caption(uploader=None, duration=None, views=None, title=None, quality=None):
     lines = []
     if title:
         title_short = title if len(title) <= 60 else title[:57] + "..."
@@ -97,6 +98,8 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
     lines.append(f"👤 الحساب: {uploader or 'غير معروف'}")
     lines.append(f"⏱ المدة: {format_duration(duration) if duration else 'غير معروف'}")
     lines.append(f"👁 المشاهدات: {format_count(views) if views is not None else 'غير معروف'}")
+    if quality:
+        lines.append(f"🎬 الجودة/الصيغة: {quality}")
     return "\n".join(lines)
 
 # ---------------- تجميع خيارات الجودة والصيغة ----------------
@@ -186,7 +189,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
-    # إعدادات الصيغ للتحميل المباشر دون إعادة ترميز بطيئة (Single-Pass)
     if mode == "mp3":
         ydl_opts["format"] = "bestaudio/best"
         ydl_opts["postprocessors"] = [{
@@ -197,7 +199,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     elif mode == "m4a":
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
-        # اختيار أفضل مقطع مدمج أفقياً جاهز بدون الحاجة لإعادة التشفير
         ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/best"
     else:
         ydl_opts["format"] = "b[ext=mp4]/b/best"
@@ -213,7 +214,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         if os.path.exists(filename):
             return filename, info
 
-        # البحث عن الملف المنزل في حالة تغيير الامتداد
         base_no_ext, _ = os.path.splitext(filename)
         directory = os.path.dirname(base_no_ext) or "."
         base_name = os.path.basename(base_no_ext)
@@ -363,11 +363,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     info = context.user_data.get('ytdlp_info') or {}
+    
+    # ✏️ تحديد نص الجودة حسْب الخيار المختار
+    quality_str = None
+    if query.data.startswith("q_"):
+        height = query.data.split("_")[1]
+        quality_str = f"{height}p"
+    elif query.data == "a_mp3":
+        quality_str = "MP3 (صوت)"
+    elif query.data == "a_m4a":
+        quality_str = "M4A (صوت أصلي)"
+    elif query.data == "v_instant":
+        quality_str = "أفضل جودة متاحة"
+
     meta_caption = build_meta_caption(
         uploader=info.get("uploader") or info.get("channel"),
         duration=info.get("duration"),
         views=info.get("view_count"),
         title=info.get("title"),
+        quality=quality_str
     )
 
     cancel_event = asyncio.Event()
@@ -420,7 +434,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل بصيغة التحميل السريع المباشر...")
+    print("🚀 البوت يعمل مع عرض سطر الجودة في وصف الفيديو...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
