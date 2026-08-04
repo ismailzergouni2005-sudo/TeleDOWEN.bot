@@ -1,6 +1,5 @@
-python-telegram-bot
+pyrogram
+tgcrypto
 yt-dlp
 Flask
-httpx
-imageio-ffmpeg
 static-ffmpeg
