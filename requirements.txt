@@ -1,5 +1,5 @@
 pyrogram
 tgcrypto
 yt-dlp
-Flask
+aiohttp
 static-ffmpeg
