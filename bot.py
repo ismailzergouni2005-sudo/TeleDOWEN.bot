@@ -28,10 +28,7 @@ threading.Thread(target=run_web, daemon=True).start()
 
 logging.basicConfig(level=logging.INFO)
 
-# ⚠️ التوكن يُقرأ حصراً من متغير بيئة الآن — لا يوجد أي قيمة افتراضية مكتوبة
-# داخل الكود. إذا كان التوكن القديم قد ظهر لأي شخص آخر (مثلاً تم مشاركة هذا
-# الملف)، يجب اعتباره مخترقاً: اذهب إلى @BotFather ونفّذ /revoke لإصدار
-# توكن جديد، ثم ضع التوكن الجديد فقط في متغيرات البيئة على Render.
+# ⚠️ التوكن يُقرأ حصراً من متغير بيئة
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError(
@@ -42,14 +39,9 @@ if not TOKEN:
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# 🎞️ فحص توفر ffmpeg على السيرفر (مطلوب لدمج فيديو+صوت لمصادر مثل إنستغرام
-# التي تفصل الفيديو عن الصوت في صيغ منفصلة بدون رابط مباشر مدمج جاهز،
-# وأيضاً مطلوب لاستخراج mp3 حقيقي عند اختيار تحميل الصوت فقط).
+# 🎞️ فحص توفر ffmpeg على السيرفر
 FFMPEG_PATH = shutil.which("ffmpeg")
 if not FFMPEG_PATH:
-    # على استضافات مثل Render غالباً ما يكون apt-get غير متاح بدون صلاحيات root،
-    # لذلك نحاول جلب نسخة ffmpeg جاهزة تلقائياً عبر مكتبة imageio-ffmpeg
-    # (تُثبّت عبر: pip install imageio-ffmpeg) بدون أي صلاحيات نظام.
     try:
         import imageio_ffmpeg
         FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
@@ -60,8 +52,7 @@ FFMPEG_AVAILABLE = FFMPEG_PATH is not None
 if not FFMPEG_AVAILABLE:
     logging.warning(
         "⚠️ ffmpeg غير متاح على هذا السيرفر — سيتم تعطيل خيارات الجودة التي "
-        "تحتاج دمج فيديو+صوت (مثل جودات إنستغرام) وكذلك أزرار تحميل الصوت "
-        "(تحتاج استخراج mp3 حقيقي)، وسيبقى فقط زر الإرسال الفوري. "
+        "تحتاج دمج فيديو+صوت وكذلك أزرار تحميل الصوت. "
         "لتفعيلها: pip install imageio-ffmpeg"
     )
 else:
@@ -70,7 +61,7 @@ else:
 # رموز دائرة الانتظار المتحركة
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
-# قوائم الجودات المدعومة (تطابق الأزرار المطلوبة)
+# قوائم الجودات المدعومة
 VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
 AUDIO_BITRATES = [128, 64]
 
@@ -116,8 +107,6 @@ def format_size(num_bytes):
 
 
 def get_remote_file_size(url):
-    """يحاول معرفة حجم الملف عبر طلب HEAD قبل الإرسال المباشر (بدون تنزيله)،
-    يُستخدم فقط لعرض الحجم في وصف الفيديو بعد نجاح الإرسال."""
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
@@ -150,12 +139,9 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None):
     return "\n".join(lines)
 
 
-# ---------------- استخراج الجودات المتاحة فعلياً كروابط مباشرة (بدون تحميل) ----------------
+# ---------------- استخراج الجودات المتاحة فعلياً ----------------
 
 def get_direct_quality_map(info):
-    """يبني خريطة {الارتفاع: رابط مباشر} لكل صيغة فيديو+صوت مدمجين فعلياً
-    (vcodec و acodec كلاهما موجود)، لأن هذي فقط القابلة للإرسال المباشر
-    بمرحلة واحدة دون تحميل/دمج على السيرفر."""
     formats = info.get("formats") or []
     video_map = {}
     for f in formats:
@@ -171,11 +157,6 @@ def get_direct_quality_map(info):
 
 
 def get_direct_audio_map(info):
-    """نفس الفكرة للصوت فقط: صيغ صوتية جاهزة (vcodec=none) برابط مباشر،
-    مصنّفة حسب البتريت الحقيقي المتوفر فعلاً.
-    ملاحظة: هذه الخريطة لم تعد تُستخدم لإرسال مباشر للصوت (انظر button_callback)
-    لأن حاويات الصوت من مصادر مثل إنستغرام غالباً mp4 ويعاملها تيليجرام
-    كملف/فيديو عام بدل مشغل صوت عند إرسالها كرابط خارجي."""
     formats = info.get("formats") or []
     audio_map = {}
     for f in formats:
@@ -192,9 +173,6 @@ def get_direct_audio_map(info):
 
 
 def get_merge_only_heights(info, exclude_heights):
-    """يستخرج الارتفاعات الحقيقية المتوفرة فقط كفيديو منفصل عن الصوت
-    (تحتاج تحميل + دمج بـ ffmpeg)، مستبعداً أي ارتفاع متوفر أصلاً كرابط
-    مباشر جاهز (exclude_heights) حتى لا نكرر نفس الجودة بمسارين."""
     formats = info.get("formats") or []
     heights = set()
     for f in formats:
@@ -205,14 +183,9 @@ def get_merge_only_heights(info, exclude_heights):
     return sorted(heights, reverse=True)
 
 
-# ---------------- لوحة اختيار الجودة (فيديو + صوت) ----------------
+# ---------------- لوحة اختيار الجودة ----------------
 
 def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=None):
-    """لوحة جودات مبنية من الجودات الحقيقية المتاحة:
-    - heights: روابط مباشرة جاهزة (مرحلة واحدة، فورية).
-    - merge_heights: تحتاج تحميل فيديو+صوت منفصلين ثم دمج بـ ffmpeg (مرحلتين، أبطأ).
-    - bitrates: أزرار الصوت تُعرض فقط إذا ffmpeg متاح، لأن تحميل الصوت
-      يمرّ إلزامياً عبر استخراج mp3 حقيقي (انظر handle_ytdlp_audio_bitrate)."""
     rows = []
     if heights:
         capped = heights[:6]
@@ -236,10 +209,9 @@ def build_quality_keyboard_generic(heights=None, bitrates=None, merge_heights=No
     return InlineKeyboardMarkup(rows)
 
 
-# ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
+# ---------------- الحصول على رابط الفيديو المباشر ----------------
 
 def get_direct_video_url(url):
-    """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً."""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -264,7 +236,7 @@ def get_direct_video_url(url):
         return direct, info
 
 
-# ---------------- تنزيل الملف مع تتبع نسبة التقدم الحقيقية (مؤشر حي مستمر) ----------------
+# ---------------- تنزيل الملف مع تتبع نسبة التقدم الدوري ----------------
 
 async def edit_progress_message(status_msg, text):
     try:
@@ -287,17 +259,23 @@ def _progress_body(state):
     return f"تم تحميل {mb:.1f} MB..."
 
 
+# ✅ تم تحديث الدالة لتقييد زمن التحديث تجنباً للحظر
 async def progress_ticker(status_msg, meta_caption, state):
     frame = 0
     last_text = None
+    last_update_time = 0
     try:
         while True:
             frame = (frame + 1) % len(SPINNER_FRAMES)
             body = _progress_body(state)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {body}"
-            if text != last_text:
+            
+            now = time.time()
+            if text != last_text and (now - last_update_time) >= 2.0:
                 last_text = text
+                last_update_time = now
                 await edit_progress_message(status_msg, text)
+                
             await asyncio.sleep(1.0)
     except asyncio.CancelledError:
         pass
@@ -342,10 +320,6 @@ def _locate_downloaded_file(info, ydl, audio_only):
 
 
 def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, height=None, bitrate=None):
-    """تنزيل حقيقي عبر yt-dlp مع تحديث حالة التقدم في state.
-    height: أقصى ارتفاع فيديو مطلوب (1080/720/480/360/240/144) عند تحديد جودة معيّنة.
-    bitrate: بتريت الصوت المطلوب (128/64) عند تحميل صوت فقط."""
-
     def hook(d):
         if d.get("status") == "downloading":
             state["stage"] = "downloading"
@@ -384,9 +358,6 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if audio_only:
-        # ✅ استخراج mp3 حقيقي عبر ffmpeg بدل إرسال رابط CDN خارجي كصوت.
-        # هذا هو المسار الذي يضمن وصول الملف كصوت قابل للتشغيل في تيليجرام،
-        # لا كملف/فيديو عام (راجع شرح المشكلة في button_callback).
         ydl_opts["format"] = "bestaudio/best"
         ydl_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -394,11 +365,6 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             "preferredquality": str(bitrate) if bitrate else "192",
         }]
     elif height:
-        # نطلب أفضل نسخة لا يتجاوز ارتفاعها القيمة المطلوبة، مع بدائل متسلسلة:
-        # 1) ملف جاهز (فيديو+صوت) بالحد الأقصى المطلوب
-        # 2) دمج فيديو+صوت بالحد الأقصى المطلوب
-        # 3) أقرب جودة أعلى متاحة (بعض المصادر مثل الريلز توفر دقة واحدة فقط)
-        # 4) أضعف جودة متاحة كملاذ أخير حتى لا يفشل التحميل نهائياً
         ydl_opts["format"] = (
             f"best[height<={height}][ext=mp4]/"
             f"bestvideo[height<={height}]+bestaudio/"
@@ -431,20 +397,6 @@ def extract_info_only(url):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
-
-
-def get_available_video_heights(info):
-    """يستخرج القيم الحقيقية والمختلفة لدقة الفيديو المتوفرة فعلاً من قائمة الصيغ،
-    حتى لا نعرض للمستخدم جودات وهمية غير موجودة أصلاً (مثل الريلز التي غالباً
-    لا تحتوي إلا على دقة واحدة)."""
-    formats = info.get("formats") or []
-    heights = set()
-    for f in formats:
-        h = f.get("height")
-        vcodec = f.get("vcodec")
-        if h and vcodec and vcodec != "none":
-            heights.add(int(h))
-    return sorted(heights, reverse=True)
 
 
 # ---------------- الرسائل والأزرار ----------------
@@ -514,7 +466,6 @@ async def send_progress_placeholder(query, thumb_url, meta_caption):
 async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption, thumb_url=None, is_audio=False):
     ticker = asyncio.create_task(_sending_ticker(status_msg, meta_caption))
     try:
-        # نجلب حجم الملف بالتوازي مع الإرسال حتى لا نؤخر الرفع من أجله
         size_task = asyncio.get_running_loop().run_in_executor(None, get_remote_file_size, direct_url)
         async def _do_send():
             if is_audio:
@@ -549,6 +500,7 @@ async def send_via_direct_url(bot, chat_id, status_msg, direct_url, meta_caption
         pass
 
 
+# ✅ تم تحديث الدالة لتتحدث كل 2.5 ثانية
 async def _sending_ticker(status_msg, meta_caption):
     frame = 0
     try:
@@ -556,11 +508,12 @@ async def _sending_ticker(status_msg, meta_caption):
             frame = (frame + 1) % len(SPINNER_FRAMES)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري الإرسال..."
             await edit_progress_message(status_msg, text)
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
     except asyncio.CancelledError:
         pass
 
 
+# ✅ تم تحديث الدالة لتتحدث كل 2.5 ثانية
 async def upload_ticker(status_msg, meta_caption):
     frame = 0
     start = time.time()
@@ -570,28 +523,23 @@ async def upload_ticker(status_msg, meta_caption):
             elapsed = int(time.time() - start)
             text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} جاري رفع الفيديو... ({elapsed} ث)"
             await edit_progress_message(status_msg, text)
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(2.5)
     except asyncio.CancelledError:
         pass
 
 
 async def send_with_retry(send_fn, max_attempts=4, base_delay=3):
-    """يعيد محاولة عملية الإرسال عند فشل الشبكة (مثل Gateway Timeout / TimedOut)
-    بدل إظهار الخطأ للمستخدم من أول فشل. send_fn هي دالة async بدون معاملات
-    (تُبنى عبر lambda/closure) لأن ملف الفيديو يجب فتحه من جديد كل محاولة."""
     last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
             return await send_fn()
         except RetryAfter as e:
-            # تليجرام يطلب صراحة الانتظار مدة معينة بسبب Rate Limit
             await asyncio.sleep(e.retry_after + 1)
             last_error = e
         except (TimedOut, NetworkError) as e:
-            # يشمل هذا: Gateway Timeout / انقطاع الاتصال المؤقت
             last_error = e
             if attempt < max_attempts:
-                await asyncio.sleep(base_delay * attempt)  # تأخير تصاعدي بين المحاولات
+                await asyncio.sleep(base_delay * attempt)
             continue
     raise last_error
 
@@ -706,7 +654,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = None
 
     try:
-        # 🎬 جودة فيديو محددة — إرسال مباشر بمرحلة واحدة (بدون تحميل على السيرفر)
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
             entry = (context.user_data.get('direct_video_map') or {}).get(height)
@@ -725,7 +672,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_via_direct_url(bot, chat_id, status_msg, entry["url"], meta_caption, thumb)
             return
 
-        # 🎞️ جودة تحتاج دمج فيديو+صوت عبر ffmpeg (تحميل + رفع، مرحلتين، فقط عند الحاجة)
         if query.data.startswith("qm_"):
             if not FFMPEG_AVAILABLE:
                 await query.edit_message_text("❌ هذه الجودة تحتاج ffmpeg غير مثبت على السيرفر حالياً.")
@@ -734,11 +680,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_ytdlp_video_quality(query, context, url, height, chat_id, bot)
             return
 
-        # 🎵 بتريت صوت محدد — نمرّ دائماً عبر تحميل + استخراج mp3 حقيقي بـ ffmpeg.
-        # لا نستخدم الرابط المباشر (direct_audio_map) هنا: حاويات الصوت من
-        # مصادر مثل إنستغرام غالباً mp4، وتيليجرام يعامل الرابط الخارجي حسب
-        # نوعه الحقيقي فيرسله كملف/فيديو عام بدل مشغل صوت. الحل هو تحميل
-        # الصوت محلياً وتحويله فعلياً إلى mp3 قبل رفعه.
         if query.data.startswith("a_"):
             if not FFMPEG_AVAILABLE:
                 await query.edit_message_text("❌ تحميل الصوت يحتاج ffmpeg غير مثبت على السيرفر حالياً.")
@@ -747,7 +688,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_ytdlp_audio_bitrate(query, context, url, bitrate, chat_id, bot)
             return
 
-        # ⚡ المسار السريع: أفضل جودة عبر رابط مباشر بدون تنزيل/رفع من عندنا
         if query.data == "v_instant":
             await query.edit_message_text("🔍 جاري جلب معلومات الفيديو...")
             direct_url, info = await asyncio.get_running_loop().run_in_executor(
