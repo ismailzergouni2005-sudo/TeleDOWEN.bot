@@ -29,6 +29,9 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
+# معرف الملصق المتحرك الترحيبي الخاص بك
+WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
+
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -347,24 +350,42 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_a
         except Exception:
             pass
 
-# ---------------- معالجات الأوامر والرسالة الترحيبية ----------------
+# ---------------- معالجات الأوامر والرسالة الترحيبية المميزة ----------------
 
 def build_welcome_message(user):
-    name = user.first_name or "صديقي"
+    name = user.first_name or "المستخدم"
+    user_id = user.id
     
-    # يمكنك وضع الرموز العادية أو الرموز المتحركة عبر tg-emoji بشرط توفر المعرف (Custom Emoji ID)
+    blue_user_link = f'<a href="tg://user?id={user_id}">« {name} »</a>'
+
     return (
-        f"👋 أهلاً بك <b>{name}</b> في بوت التحميل المباشر!\n\n"
-        "أرسل لي رابط أي فيديو وسأقوم بتحميله لك بالتنسيق والجودة المطلوبة.\n\n"
-        "🌐 <b>المنصات المدعومة:</b>\n"
-        "🎵 <b>TikTok</b> | 📸 <b>Instagram</b>\n"
-        "▶️ <b>YouTube</b> | 📌 <b>Pinterest</b>\n"
-        "👍 <b>Facebook</b> | 🐦 <b>X (Twitter)</b>\n\n"
-        "📎 أرسل الرابط هنا وسأتولى الباقي!"
+        f"✨ أهلاً وسهلاً بك يا ✦ {blue_user_link} ✦\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
+        f"أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
+        f"🌐 <b>المنصات المدعومة:</b>\n"
+        f"├ 🎵 <b>TikTok</b>\n"
+        f"├ 📸 <b>Instagram</b>\n"
+        f"├ ▶️ <b>YouTube</b>\n"
+        f"├ 📌 <b>Pinterest</b>\n"
+        f"├ 👍 <b>Facebook</b>\n"
+        f"└ 🐦 <b>X (Twitter)</b>\n\n"
+        f"⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(build_welcome_message(update.effective_user), parse_mode='HTML')
+    # 1. إرسال الرسالة الترحيبية المزخرفة
+    await update.message.reply_text(
+        build_welcome_message(update.effective_user),
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
+    
+    # 2. إرسال الملصق المتحرك بعدها مباشرة
+    try:
+        await update.message.reply_sticker(sticker=WELCOME_STICKER_ID)
+    except Exception as e:
+        logging.error(f"فشل إرسال الملصق الترحيبي: {e}")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
