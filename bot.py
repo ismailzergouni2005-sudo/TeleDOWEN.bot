@@ -1,9 +1,11 @@
 import os
 import re
+import sys
 import time
 import logging
 import asyncio
 import threading
+import subprocess
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -27,7 +29,7 @@ threading.Thread(target=run_web, daemon=True).start()
 logging.basicConfig(level=logging.INFO)
 
 # ⚠️ يفضّل وضع التوكن في متغير بيئة بدل كتابته مباشرة في الكود
-TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
+TOKEN = os.environ.get("BOT_TOKEN", "8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -38,6 +40,128 @@ SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 # قوائم الجودات المدعومة (تطابق الأزرار المطلوبة)
 VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
 AUDIO_BITRATES = [128, 64]
+
+# 🍪 مسار ملف كوكيز يوتيوب (اختياري) لتجاوز رسالة "Sign in to confirm you're not a bot"
+# التي تظهر أحياناً على سيرفرات الاستضافة (Render/Railway/إلخ). لإصلاحها:
+# 1) ثبّت إضافة مثل "Get cookies.txt LOCALLY" على متصفحك وسجّل الدخول ليوتيوب.
+# 2) صدّر كوكيز يوتيوب كملف cookies.txt وارفعه بجانب هذا الملف على السيرفر
+#    (أو كـ Secret File على Render مثلاً في /etc/secrets/cookies.txt).
+# 3) عيّن متغير بيئة باسم YOUTUBE_COOKIES_FILE يشير لمسار الملف الأصلي.
+#
+# ⚠️ ملاحظة مهمة: بعض منصات الاستضافة (مثل Render "Secret Files") تضع الملف
+# في مسار للقراءة فقط (read-only). لكن yt-dlp يحاول إعادة كتابة/تحديث الكوكيز
+# في نفس الملف بعد كل طلب، مما يسبب خطأ:
+#   [Errno 30] Read-only file system: '/etc/secrets/cookies.txt'
+# لحل هذا، ننسخ الملف عند بدء التشغيل إلى مسار قابل للكتابة داخل DOWNLOAD_DIR
+# ونستخدم هذه النسخة بدل الأصل المحمي.
+_RAW_YOUTUBE_COOKIES_FILE = os.environ.get("YOUTUBE_COOKIES_FILE")
+YOUTUBE_COOKIES_FILE = None
+
+
+def _prepare_writable_cookies_file():
+    """ينسخ ملف الكوكيز (الذي قد يكون للقراءة فقط) إلى مسار قابل للكتابة
+    داخل مجلد التنزيلات، حتى يستطيع yt-dlp تحديثه دون فشل."""
+    global YOUTUBE_COOKIES_FILE
+    if _RAW_YOUTUBE_COOKIES_FILE and os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
+        writable_path = os.path.join(DOWNLOAD_DIR, "cookies.txt")
+        try:
+            import shutil
+            shutil.copyfile(_RAW_YOUTUBE_COOKIES_FILE, writable_path)
+            YOUTUBE_COOKIES_FILE = writable_path
+            logging.info(f"تم نسخ ملف الكوكيز إلى مسار قابل للكتابة: {writable_path}")
+        except Exception as e:
+            logging.warning(f"تعذر نسخ ملف الكوكيز إلى مسار قابل للكتابة: {e}")
+            YOUTUBE_COOKIES_FILE = None
+
+
+_prepare_writable_cookies_file()
+
+# 🔍 رسالة تشخيصية واضحة عند الإقلاع لمعرفة سبب فشل الكوكيز مباشرة من اللوق
+if not _RAW_YOUTUBE_COOKIES_FILE:
+    logging.warning("⚠️ متغير البيئة YOUTUBE_COOKIES_FILE غير مضبوط إطلاقاً على هذا السيرفر.")
+elif not os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
+    logging.warning(f"⚠️ YOUTUBE_COOKIES_FILE مضبوط بالمسار '{_RAW_YOUTUBE_COOKIES_FILE}' لكن الملف غير موجود فعلياً هناك.")
+elif YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+    try:
+        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
+            _first_line = _f.readline().strip()
+        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
+            _lines_count = sum(1 for _ in _f)
+        logging.info(f"✅ تم تحميل ملف الكوكيز بنجاح ({_lines_count} سطر). أول سطر: '{_first_line[:40]}'")
+        if "Netscape" not in _first_line and not _first_line.startswith("#") and "\t" not in _first_line:
+            logging.warning("⚠️ ملف الكوكيز لا يبدو بصيغة Netscape القياسية — قد يفشل yt-dlp في قراءته.")
+    except Exception as _e:
+        logging.warning(f"⚠️ تعذرت قراءة ملف الكوكيز للتحقق منه: {_e}")
+else:
+    logging.warning("⚠️ فشل تجهيز نسخة قابلة للكتابة من ملف الكوكيز لسبب غير معروف.")
+
+
+# ---------------- تحديث yt-dlp تلقائياً عند كل إقلاع ----------------
+# يوتيوب يغيّر آليات حمايته ضد البوتات بشكل متكرر (أحياناً أسبوعياً)، ومطوّرو
+# yt-dlp يصدرون تحديثات لمواجهة ذلك. تثبيت نسخة قديمة هو أشيع سبب لظهور خطأ
+# "Sign in to confirm you're not a bot" حتى مع كوكيز صحيحة. لذلك نحاول تحديث
+# المكتبة تلقائياً في كل مرة يُقلع فيها البوت (عند كل Deploy/Restart على Render).
+def auto_update_yt_dlp():
+    global yt_dlp
+    try:
+        old_version = getattr(yt_dlp, "version", None)
+        old_version = getattr(old_version, "__version__", "غير معروف") if old_version else "غير معروف"
+        logging.info(f"🔄 جاري التحقق من تحديثات yt-dlp (النسخة الحالية: {old_version})...")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "yt-dlp"],
+            capture_output=True, text=True, timeout=120,
+        )
+
+        if result.returncode != 0:
+            logging.warning(f"⚠️ فشل تحديث yt-dlp تلقائياً: {result.stderr[:300]}")
+            return
+
+        # إعادة تحميل موديول yt-dlp داخل نفس العملية لتفعيل النسخة الجديدة فوراً
+        import importlib
+        importlib.reload(yt_dlp)
+
+        new_version = getattr(yt_dlp, "version", None)
+        new_version = getattr(new_version, "__version__", "غير معروف") if new_version else "غير معروف"
+
+        if new_version != old_version:
+            logging.info(f"✅ تم تحديث yt-dlp من {old_version} إلى {new_version}.")
+        else:
+            logging.info(f"✅ yt-dlp محدّث بالفعل (النسخة: {new_version}).")
+    except subprocess.TimeoutExpired:
+        logging.warning("⚠️ انتهت مهلة تحديث yt-dlp (120 ثانية) — سيتم المتابعة بالنسخة الحالية.")
+    except Exception as e:
+        logging.warning(f"⚠️ تعذر تحديث yt-dlp تلقائياً: {e}")
+
+
+auto_update_yt_dlp()
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def base_ydl_opts():
+    """خيارات yt-dlp مشتركة لكل الطلبات، تشمل محاولة تجاوز حماية يوتيوب ضد
+    البوتات عبر تجربة عدة عملاء (clients) مختلفة بالترتيب حتى ينجح أحدها،
+    مع دعم اختياري لملف كوكيز حقيقي إن توفر (أدق حل لكن يتطلب إعداداً يدوياً)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 60,
+        "retries": 3,
+        "http_headers": {"User-Agent": _UA},
+        "extractor_args": {
+            # نجرب عدة عملاء بالترتيب: tv و ios غالباً أقل عرضة لفحص
+            # "Sign in to confirm you're not a bot" من عميل web، وإن فشل
+            # أحدها ينتقل yt-dlp تلقائياً للتالي في القائمة.
+            "youtube": {"player_client": ["tv", "ios", "android", "web"]}
+        },
+    }
+    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        opts["cookiefile"] = YOUTUBE_COOKIES_FILE
+    return opts
 
 
 def clean_url(url: str) -> str:
@@ -141,27 +265,11 @@ def build_quality_keyboard_generic(heights=None):
     return InlineKeyboardMarkup(rows)
 
 
-
-
-
-
 # ---------------- الحصول على رابط الفيديو المباشر (بدون تنزيل محلي) ----------------
 
 def get_direct_video_url(url):
     """يجلب رابط الفيديو المباشر + معلوماته، بدون تنزيل الملف على السيرفر إطلاقاً."""
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "b[ext=mp4]/b/best",
-        "socket_timeout": 60,
-        "retries": 3,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    ydl_opts = {**base_ydl_opts(), "format": "b[ext=mp4]/b/best"}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         direct = info.get("url")
@@ -274,20 +382,12 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
             state["stage"] = "processing"
 
     ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+        **base_ydl_opts(),
         "outtmpl": dest_template,
-        "socket_timeout": 60,
         "retries": 5,
         "fragment_retries": 5,
         "merge_output_format": "mp4",
         "progress_hooks": [hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
     }
 
     if audio_only:
@@ -320,19 +420,7 @@ def yt_dlp_download_with_progress(url, dest_template, state, audio_only=False, h
 
 
 def extract_info_only(url):
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "socket_timeout": 60,
-        "retries": 3,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    ydl_opts = {**base_ydl_opts(), "skip_download": True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -372,7 +460,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
     except Exception as e:
-        await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
+        err_text = str(e)
+        if "Sign in to confirm" in err_text or "not a bot" in err_text:
+            await checking_msg.edit_text(
+                "❌ يوتيوب رفض الطلب مؤقتاً (فحص مكافحة البوتات).\n"
+                "هذا شائع على سيرفرات الاستضافة، ويُحل غالباً بإضافة ملف كوكيز "
+                "(YOUTUBE_COOKIES_FILE) — راجع الملاحظة أعلى الكود لمعرفة كيفية إعداده."
+            )
+        else:
+            await checking_msg.edit_text(f"❌ تعذر جلب معلومات الرابط:\n`{err_text[:150]}`", parse_mode='Markdown')
         return
 
     context.user_data['ytdlp_info'] = info
