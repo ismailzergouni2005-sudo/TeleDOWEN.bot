@@ -74,6 +74,25 @@ def _prepare_writable_cookies_file():
 
 _prepare_writable_cookies_file()
 
+# 🔍 رسالة تشخيصية واضحة عند الإقلاع لمعرفة سبب فشل الكوكيز مباشرة من اللوق
+if not _RAW_YOUTUBE_COOKIES_FILE:
+    logging.warning("⚠️ متغير البيئة YOUTUBE_COOKIES_FILE غير مضبوط إطلاقاً على هذا السيرفر.")
+elif not os.path.exists(_RAW_YOUTUBE_COOKIES_FILE):
+    logging.warning(f"⚠️ YOUTUBE_COOKIES_FILE مضبوط بالمسار '{_RAW_YOUTUBE_COOKIES_FILE}' لكن الملف غير موجود فعلياً هناك.")
+elif YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+    try:
+        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
+            _first_line = _f.readline().strip()
+        with open(YOUTUBE_COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _f:
+            _lines_count = sum(1 for _ in _f)
+        logging.info(f"✅ تم تحميل ملف الكوكيز بنجاح ({_lines_count} سطر). أول سطر: '{_first_line[:40]}'")
+        if "Netscape" not in _first_line and not _first_line.startswith("#") and "\t" not in _first_line:
+            logging.warning("⚠️ ملف الكوكيز لا يبدو بصيغة Netscape القياسية — قد يفشل yt-dlp في قراءته.")
+    except Exception as _e:
+        logging.warning(f"⚠️ تعذرت قراءة ملف الكوكيز للتحقق منه: {_e}")
+else:
+    logging.warning("⚠️ فشل تجهيز نسخة قابلة للكتابة من ملف الكوكيز لسبب غير معروف.")
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
