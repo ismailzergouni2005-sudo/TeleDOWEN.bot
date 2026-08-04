@@ -42,18 +42,12 @@ if not FFMPEG_PATH:
 
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
-# منصات غالباً توفر جودة واحدة حقيقية فقط -> نتجاوز لوحة الاختيار ونحمّل مباشرة لأقصى سرعة
-FAST_PLATFORMS = ("instagram.com", "pinterest.com", "pin.it")
-
 def clean_url(url: str) -> str:
     if "instagram.com" in url:
         match = re.search(r'(https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+)', url)
         if match:
             return match.group(1) + "/"
     return url
-
-def is_fast_platform(url: str) -> bool:
-    return any(p in url for p in FAST_PLATFORMS)
 
 # ---------------- أدوات التنسيق والواجهة ----------------
 
@@ -70,17 +64,6 @@ def format_duration(seconds):
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-def format_size(num_bytes):
-    try:
-        num_bytes = float(num_bytes)
-    except (TypeError, ValueError):
-        return None
-    if num_bytes <= 0:
-        return None
-    if num_bytes >= 1024 * 1024:
-        return f"{num_bytes / (1024 * 1024):.1f} MB"
-    return f"{num_bytes / 1024:.0f} KB"
 
 def format_count(n):
     try:
@@ -105,23 +88,12 @@ def build_meta_caption(uploader=None, duration=None, views=None, title=None, qua
         lines.append(f"🎬 الجودة/الصيغة: {quality}")
     return "\n".join(lines)
 
-# ---------------- تجميع خيارات الجودة والصيغة (مصحّح) ----------------
-
-def _estimate_format_size(f):
-    """يحاول الحصول على حجم تقريبي حقيقي للفورمات (فيديو فقط، بدون صوت)."""
-    size = f.get("filesize") or f.get("filesize_approx")
-    if size:
-        return size
-    tbr = f.get("tbr")  # kbit/s
-    duration = f.get("duration")
-    if tbr and duration:
-        return tbr * 1000 / 8 * duration
-    return None
+# ---------------- تجميع خيارات الجودة والصيغة ----------------
 
 def get_available_options(info):
     """
-    يبني قائمة جودات حقيقية ومختلفة فعلياً (استناداً إلى height + حجم تقريبي مختلف)،
-    بدل الاعتماد فقط على قيمة height التي قد تتكرر لنفس الملف الفعلي في يوتيوب/انستغرام.
+    يبني قائمة جودات حقيقية ومختلفة فعلياً (استناداً إلى height)،
+    بدون أي تقدير للحجم (تم إلغاء عرض الحجم التقريبي).
     """
     formats = info.get("formats") or []
     candidates = {}
@@ -132,29 +104,12 @@ def get_available_options(info):
         ext = f.get("ext", "mp4")
         if not h or vcodec in (None, "none"):
             continue
-        size = _estimate_format_size(f)
-        # نحتفظ بأفضل (أكبر) تقدير حجم متاح لكل دقة، لتفادي فورمات فرعية ضعيفة الجودة بنفس الـ height
+        # نحتفظ بأفضل امتداد متاح لكل دقة (نفضل mp4 إن وجد)
         prev = candidates.get(h)
-        if prev is None or (size or 0) > (prev.get("size") or 0):
-            candidates[h] = {"ext": ext, "size": size}
+        if prev is None or (ext == "mp4" and prev.get("ext") != "mp4"):
+            candidates[h] = {"ext": ext}
 
-    # إذا كانت المنصة توفر دقة واحدة فقط فعلياً (كثير من إنستغرام/بنترست)، لا داعي لعرض جودات وهمية متعددة
-    if len(candidates) <= 1:
-        return candidates
-
-    # استبعاد الدقات التي حجمها مطابق تقريباً لدقة أعلى (فورمات مكررة/وهمية)
-    sorted_heights = sorted(candidates.keys(), reverse=True)
-    filtered = {}
-    last_size = None
-    for h in sorted_heights:
-        size = candidates[h]["size"]
-        if last_size is not None and size and abs(size - last_size) / max(last_size, 1) < 0.05:
-            # نفس الحجم تقريباً (فرق أقل من 5%) => على الأرجح نفس الملف الفعلي، تجاهل التكرار
-            continue
-        filtered[h] = candidates[h]
-        last_size = size or last_size
-
-    return filtered if filtered else candidates
+    return candidates
 
 def build_quality_keyboard(video_opts):
     rows = []
@@ -163,9 +118,7 @@ def build_quality_keyboard(video_opts):
     buttons = []
     for h in heights:
         ext = video_opts[h]["ext"].upper()
-        size = video_opts[h].get("size")
-        size_label = format_size(size) if size else None
-        label = f"🎬 {h}p ({ext})" + (f" ~{size_label}" if size_label else "")
+        label = f"🎬 {h}p ({ext})"
         buttons.append(InlineKeyboardButton(label, callback_data=f"q_{h}"))
 
     for i in range(0, len(buttons), 2):
@@ -189,14 +142,14 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل (بدون إعادة ضغط إضافية) ----------------
+# ---------------- منطق التحميل (سريع، عملية واحدة فقط) ----------------
 
 def extract_info_only(url):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "socket_timeout": 60,
+        "socket_timeout": 30,
         "retries": 3,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -220,8 +173,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "quiet": True,
         "no_warnings": True,
         "outtmpl": dest_template,
-        "socket_timeout": 60,
-        "retries": 5,
+        "socket_timeout": 20,
+        "retries": 3,
+        "fragment_retries": 3,
+        "concurrent_fragment_downloads": 8,
         "progress_hooks": [hook],
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -240,9 +195,10 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     elif mode == "m4a":
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
-        # مهم: الفallback الأخير يبقى مقيداً بنفس الـ height لضمان تغيّر الحجم فعلياً
-        # حسب الجودة المختارة، بدل القفز لأفضل جودة غير محدودة كما كان سابقاً.
+        # نفضل صيغة مدمجة جاهزة أولاً (بدون دمج ffmpeg) لتفادي إبطاء العملية،
+        # مع الحفاظ على تقييد الجودة المختارة في كل مسار fallback.
         ydl_opts["format"] = (
+            f"best[height<={height}][ext=mp4]/"
             f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
             f"bestvideo[height<={height}]+bestaudio/"
             f"best[height<={height}]/"
@@ -250,7 +206,7 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         )
         ydl_opts["merge_output_format"] = "mp4"
     else:
-        ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
+        ydl_opts["format"] = "best[ext=mp4]/bestvideo+bestaudio/b/best"
         ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -260,58 +216,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         if mode == "mp3":
             base, _ = os.path.splitext(filename)
             filename = base + ".mp3"
-
-        final_file = filename
-        if not os.path.exists(final_file):
-            base_no_ext, _ = os.path.splitext(filename)
-            directory = os.path.dirname(base_no_ext) or "."
-            base_name = os.path.basename(base_no_ext)
-            for fname in os.listdir(directory):
-                if fname.startswith(base_name):
-                    final_file = os.path.join(directory, fname)
-                    break
-
-        return final_file, info
-
-def yt_dlp_fast_single_pass(url, dest_template, state, cancel_event):
-    """
-    مسار سريع لإنستغرام/بنترست: استخراج + تحميل في عملية واحدة فقط،
-    بصيغة مدمجة جاهزة (بدون تحميل فيديو وصوت منفصلين ثم دمجهما بـ ffmpeg)،
-    مع مهلات زمنية قصيرة ومحاولات أقل وتحميل أجزاء متوازٍ لأقصى سرعة.
-    """
-    def hook(d):
-        if cancel_event.is_set():
-            raise RuntimeError("CANCELLED")
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            downloaded = d.get("downloaded_bytes", 0)
-            state["downloaded"] = downloaded
-            if total:
-                state["percent"] = downloaded / total * 100
-
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "outtmpl": dest_template,
-        "socket_timeout": 15,
-        "retries": 2,
-        "fragment_retries": 2,
-        "concurrent_fragment_downloads": 8,
-        "progress_hooks": [hook],
-        # صيغة مدمجة جاهزة أولاً (الحالة الشائعة في IG/Pinterest) لتفادي أي دمج ffmpeg لاحق،
-        # مع fallback بسيط فقط عند الحاجة
-        "format": "best[ext=mp4]/best/bestvideo+bestaudio",
-        "merge_output_format": "mp4",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        },
-    }
-    if FFMPEG_PATH:
-        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
 
         final_file = filename
         if not os.path.exists(final_file):
@@ -380,10 +284,7 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
             pass
 
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, is_audio=False):
-    size_label = format_size(os.path.getsize(filepath)) if os.path.exists(filepath) else None
     caption = f"{meta_caption}\n\n✅ تم التحميل بنجاح!"
-    if size_label:
-        caption += f"\n📦 الحجم النهائي: {size_label}"
 
     try:
         with open(filepath, "rb") as f:
@@ -420,11 +321,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = clean_url(match.group(0))
     context.user_data['download_url'] = url
 
-    # مسار سريع: إنستغرام/بنترست غالباً جودة واحدة فقط -> تحميل فوري بدون لوحة اختيار
-    if is_fast_platform(url):
-        await fast_download_flow(update.message, context, url)
-        return
-
     checking_msg = await update.message.reply_text("🔍 جاري جلب الجودات والصيغ المتاحة...")
     try:
         info = await asyncio.get_running_loop().run_in_executor(None, extract_info_only, url)
@@ -439,36 +335,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await checking_msg.edit_text(f"❌ تعذر تحليل الرابط:\n`{str(e)[:150]}`", parse_mode='Markdown')
-
-async def fast_download_flow(message, context, url):
-    """تحميل وإرسال فوري بأقصى سرعة، بعملية استخراج+تحميل واحدة فقط (بدون لوحة جودات)."""
-    cancel_event = asyncio.Event()
-    context.user_data["active_cancel_event"] = cancel_event
-
-    status_msg = await message.reply_text("⚡ جاري التحميل بأقصى سرعة...")
-    state = {"percent": None, "downloaded": 0}
-    dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
-
-    try:
-        filepath, info = await run_with_progress(
-            yt_dlp_fast_single_pass, (url, dest_template, state, cancel_event),
-            status_msg, "⚡ تحميل سريع", state, cancel_event
-        )
-        meta_caption = build_meta_caption(
-            uploader=info.get("uploader") or info.get("channel"),
-            duration=info.get("duration"),
-            views=info.get("view_count"),
-            title=info.get("title"),
-            quality="أفضل جودة متاحة"
-        )
-        await send_final_file(context.bot, message.chat_id, status_msg, filepath, meta_caption, is_audio=False)
-    except Exception as e:
-        try:
-            await status_msg.edit_text(f"❌ **حدث خطأ أثناء التحميل:**\n`{str(e)[:150]}`", parse_mode='Markdown')
-        except Exception:
-            pass
-    finally:
-        context.user_data.pop("active_cancel_event", None)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -569,7 +435,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 البوت يعمل وجاهز لمعالجة وإعادة ضغط مقاطع انستغرام وبنترست...")
+    print("🚀 البوت يعمل وجاهز لمعالجة جميع الروابط مع عرض خيارات الجودة...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
