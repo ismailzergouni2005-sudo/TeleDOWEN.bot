@@ -5,6 +5,12 @@ import shutil
 import logging
 import asyncio
 import threading
+
+# --- تفعيل مكتبة static-ffmpeg تلقائياً ---
+import static_ffmpeg
+static_ffmpeg.add_paths()
+# ----------------------------------------
+
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -313,28 +319,23 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     ydl_opts["outtmpl"] = dest_template
     ydl_opts["progress_hooks"] = [hook]
 
-    # إجبار اختيار صيغة تحتوي الصوت والصورة معاً مباشرة لتفادي الحاجة لـ FFmpeg
     if mode == "mp3":
-        if FFMPEG_PATH:
-            ydl_opts["format"] = "bestaudio/best"
-            ydl_opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        else:
-            # إذا لم يوجد FFmpeg، استخرج أفضل ملف صوت مباشر بصيغته الأصيلة
-            ydl_opts["format"] = "ba/b"
+        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }]
     elif height:
-        ydl_opts["format"] = f"b[height<={height}]/best[height<={height}]/bv*+ba/b"
+        ydl_opts["format"] = f"bv*[height<={height}]+ba/b[height<={height}]/best"
     else:
-        ydl_opts["format"] = "b/best/bv*+ba/b"
+        ydl_opts["format"] = "bv*+ba/b/best"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
 
-        if mode == "mp3" and FFMPEG_PATH:
+        if mode == "mp3":
             base, _ = os.path.splitext(filename)
             if os.path.exists(base + ".mp3"):
                 filename = base + ".mp3"
