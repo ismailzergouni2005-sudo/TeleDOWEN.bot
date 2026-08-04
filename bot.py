@@ -83,9 +83,10 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, quality=None):
+def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=None, title=None, description=None, quality=None):
     lines = []
     
+    # 1. رابط اسم الحساب باللون الأزرق
     if uploader_id:
         uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
         lines.append(f"👤 الحساب: {uploader_link}")
@@ -94,10 +95,12 @@ def build_meta_caption(uploader=None, uploader_id=None, duration=None, views=Non
     else:
         lines.append("👤 الحساب: غير معروف")
 
-    if title:
-        title_clean = title.split('\n')[0]
-        title_short = title_clean if len(title_clean) <= 50 else title_clean[:47] + "..."
-        lines.append(f"📝 {title_short}")
+    # 2. عرض وصف الفيديو الأصلي مكان العنوان التلقائي
+    text_content = description or title
+    if text_content:
+        clean_text = text_content.strip().split('\n')[0]
+        short_text = clean_text if len(clean_text) <= 80 else clean_text[:77] + "..."
+        lines.append(f"📝 الوصف: {short_text}")
         
     formatted_duration = format_duration(duration)
     if formatted_duration:
@@ -225,7 +228,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             "preferredquality": "192",
         }]
     elif height:
-        # إجبار دمج الصوت والفيديو معاً لتفادي المقاطع التي بدون صوت
         ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
         ydl_opts["merge_output_format"] = "mp4"
     else:
@@ -436,6 +438,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration=info.get("duration"),
         views=info.get("view_count"),
         title=info.get("title"),
+        description=info.get("description"),
         quality=quality_str
     )
 
