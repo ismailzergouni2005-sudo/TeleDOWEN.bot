@@ -75,7 +75,7 @@ TEXTS = {
         "views": "👁 المشاهدات",
         "quality": "🎬 الجودة/الصيغة",
         "best_quality": "أفضل جودة متاحة",
-        "audio_only": "🎵 MP3 (صوت فقط)",
+        "audio_only": "🎵 الصوت فقط",
         "instant": "⚡ أفضل جودة مباشرة",
         "cancel": "❌ إلغاء",
         "cancel_download": "🛑 إلغاء التحميل",
@@ -83,7 +83,7 @@ TEXTS = {
         "cancelled": "🛑 تم إلغاء عملية التحميل.",
         "expired": "❌ انتهت الجلسة، أرسل الرابط مجدداً.",
         "downloading": "⏳ جاري بدء التحميل...",
-        "processing": "جاري التحميل والمعالجة السريعة...",
+        "processing": "جاري التحميل والمعالجة...",
         "downloaded_mb": "تم تحميل {mb:.1f} MB...",
         "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد التحميل المسموح للبوتات هو 50MB.",
         "success": "✅ تم التحميل بنجاح!",
@@ -117,7 +117,7 @@ TEXTS = {
         "views": "👁 Views",
         "quality": "🎬 Quality/Format",
         "best_quality": "Best quality available",
-        "audio_only": "🎵 MP3 (Audio Only)",
+        "audio_only": "🎵 Audio Only",
         "instant": "⚡ Best Quality Direct",
         "cancel": "❌ Cancel",
         "cancel_download": "🛑 Cancel Download",
@@ -125,7 +125,7 @@ TEXTS = {
         "cancelled": "🛑 Download process cancelled.",
         "expired": "❌ Session expired, please send the link again.",
         "downloading": "⏳ Starting download...",
-        "processing": "Fast downloading & processing...",
+        "processing": "Downloading & processing...",
         "downloaded_mb": "Downloaded {mb:.1f} MB...",
         "too_large": "❌ **File size too large ({size})**.\nTelegram bot limit is 50MB.",
         "success": "✅ Downloaded successfully!",
@@ -271,11 +271,11 @@ def build_reselect_keyboard(lang):
         [InlineKeyboardButton(t["reselect"], callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل السريع والمعالجة ----------------
+# ---------------- منطق التحميل المعالج ----------------
 
-TWITTER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 def extract_info_only(url):
@@ -285,8 +285,11 @@ def extract_info_only(url):
         "skip_download": True,
         "socket_timeout": 15,
         "retries": 2,
-        "http_headers": TWITTER_HEADERS,
+        "http_headers": HTTP_HEADERS,
     }
+    if os.path.exists("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -306,16 +309,20 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
         "no_warnings": True,
         "outtmpl": dest_template,
         "socket_timeout": 15,
-        "retries": 2,
-        "fragment_retries": 2,
-        "concurrent_fragment_downloads": 10, # تسريع التحميل متعدد الأجزاء
+        "retries": 3,
+        "fragment_retries": 3,
+        "concurrent_fragment_downloads": 10,
         "progress_hooks": [hook],
-        "http_headers": TWITTER_HEADERS,
+        "http_headers": HTTP_HEADERS,
     }
+
+    if os.path.exists("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
 
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
+    # معالجة وضع الصوت
     if mode == "mp3":
         ydl_opts["format"] = "bestaudio/best"
         if FFMPEG_PATH:
@@ -324,20 +331,19 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }]
+    # معالجة وضع الفيديو وإجبار جلب الصوت معه دائماً
     elif height:
-        # جلب صيغ مدمجة بها الصوت والفيديو تلقائياً لتفادي تنزيل فيديو صامت
-        ydl_opts["format"] = f"best[height<={height}]/bestvideo[height<={height}]+bestaudio/best"
+        ydl_opts["format"] = f"best[height<={height}][vcodec!=none][acodec!=none]/bestvideo[height<={height}]+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
     else:
-        ydl_opts["format"] = "best/bestvideo+bestaudio"
+        ydl_opts["format"] = "best[vcodec!=none][acodec!=none]/bestvideo+bestaudio/best"
         ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
 
-        # التعامل مع ملفات الصوت المخرجة
-        if mode == "mp3":
+        if mode == "mp3" and FFMPEG_PATH:
             base, _ = os.path.splitext(filename)
             if os.path.exists(base + ".mp3"):
                 filename = base + ".mp3"
