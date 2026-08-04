@@ -17,9 +17,10 @@ import yt_dlp
 logging.basicConfig(level=logging.INFO)
 
 # --- قراءة متغيرات البيئة ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_HASH = os.environ.get("API_HASH")
-raw_api_id = os.environ.get("API_ID")
+BOT_TOKEN = os.environ.get("8846997512:AAFfc2HSrJHWmXHfiEMO_M5I4F-OPc3zrrk")
+API_HASH = os.environ.get("0276a0250c2cfc8a1dde70b0f9f92fcd")
+raw_api_id = os.environ.get("32087655
+")
 
 if not BOT_TOKEN or not API_HASH or not raw_api_id:
     logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render!")
