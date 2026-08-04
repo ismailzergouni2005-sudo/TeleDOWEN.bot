@@ -1,4 +1,6 @@
-hydrogram
-tgcrypto
+python-telegram-bot
 yt-dlp
-aiohttp
+Flask
+httpx
+imageio-ffmpeg
+static-ffmpeg
