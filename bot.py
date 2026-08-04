@@ -146,7 +146,7 @@ def build_reselect_keyboard():
         [InlineKeyboardButton("🔄 اختيار صيغة أخرى", callback_data="reselect_format")]
     ])
 
-# ---------------- منطق التحميل والضغط الحقيقي ----------------
+# ---------------- منطق التحميل (بدون إعادة ضغط إضافية) ----------------
 
 def extract_info_only(url):
     ydl_opts = {
@@ -161,36 +161,6 @@ def extract_info_only(url):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
-
-def compress_video(input_path, target_height):
-    """إعادة ضغط الفيديو فعلياً وتصغير المقاس الحجم عبر FFmpeg Direct"""
-    if not FFMPEG_PATH or not os.path.exists(input_path):
-        return input_path
-
-    compressed_path = input_path.replace(".mp4", f"_{target_height}p.mp4")
-    
-    # أمر ffmpeg لإعادة القياس وضغط الفيديو بحجم أصفر
-    cmd = [
-        FFMPEG_PATH, "-y",
-        "-i", input_path,
-        "-vf", f"scale=-2:'min({target_height},ih)'",
-        "-c:v", "libx264",
-        "-crf", "28",
-        "-preset", "faster",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        compressed_path
-    ]
-    
-    try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        if os.path.exists(compressed_path) and os.path.getsize(compressed_path) > 0:
-            os.remove(input_path)
-            return compressed_path
-    except Exception as e:
-        logging.error(f"Compression error: {e}")
-    
-    return input_path
 
 def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="video", height=None):
     def hook(d):
@@ -227,6 +197,7 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
     elif mode == "m4a":
         ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     elif height:
+        # اختيار الجودة يتم هنا مباشرة عبر yt-dlp، بدون أي إعادة ضغط لاحقة
         ydl_opts["format"] = f"best[height<={height}]/b[height<={height}]/bestvideo+bestaudio/best"
     else:
         ydl_opts["format"] = "bestvideo+bestaudio/b[ext=mp4]/b/best"
@@ -248,10 +219,6 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
                 if fname.startswith(base_name):
                     final_file = os.path.join(directory, fname)
                     break
-
-        # 🎬 تطبيق الضغط الحقيقي إذا كان الخيار فيديو محدد الارتفاع (مثلاً 480p, 720p)
-        if mode == "video" and height and final_file.endswith(".mp4"):
-            final_file = compress_video(final_file, height)
 
         return final_file, info
 
