@@ -1,22 +1,46 @@
 import os
-import asyncio
+import shutil
 import logging
+import asyncio
+
 from aiohttp import web
 from hydrogram import Client, filters
+from hydrogram.types import Message
+import yt_dlp
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
+# --- قراءة متغيرات البيئة من Render ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_HASH = os.environ.get("API_HASH")
-API_ID = int(os.environ.get("API_ID", 0))
+raw_api_id = os.environ.get("API_ID")
+PROXY_URL = os.environ.get("PROXY_URL")  # البروكسي الخاص بيوتيوب فقط
+
+if not BOT_TOKEN or not API_HASH or not raw_api_id:
+    logging.error("❌ خطأ: يرجى إضافة BOT_TOKEN و API_HASH و API_ID في إعدادات Render!")
+    exit(1)
+
+try:
+    API_ID = int(raw_api_id)
+except ValueError:
+    logging.error("❌ خطأ: يجب أن يكون API_ID رقماً فقط!")
+    exit(1)
 
 bot = Client("my_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# سيرفر إبقاء Render يعمل
-async def handle_ping(request):
-    return web.Response(text="Running")
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-async def start_web():
+FFMPEG_PATH = shutil.which("ffmpeg")
+
+# --- خادم الويب لإبقاء الخدمة متصلة على Render ---
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
@@ -24,20 +48,115 @@ async def start_web():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logging.info(f"🌐 Web server running on port {port}")
 
-# الرد على كل الرسائل فوراً للتأكد
-@bot.on_message()
-async def echo(client, message):
-    logging.info(f"تم استقبال رسالة من: {message.from_user.id}")
-    await message.reply_text("✅ البوت متصل ويستجيب بنجاح!")
+# --- أدوات الفحص والتنزيل ---
+def format_file_size(filepath):
+    if os.path.exists(filepath):
+        size_bytes = os.path.getsize(filepath)
+        size_mb = size_bytes / (1024 * 1024)
+        return size_mb, f"{size_mb:.1f} MB"
+    return 0, "0 MB"
 
+def download_video(url, dest_template):
+    ydl_opts = {
+        "quiet": True,
+        "outtmpl": dest_template,
+        "format": "bv*+ba/b/best",
+        "nocheckcertificate": True,
+        "add_header": [
+            ('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        ]
+    }
+
+    # تخصيص البروكسي لروابط يوتيوب فقط
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+    if is_youtube and PROXY_URL:
+        ydl_opts["proxy"] = PROXY_URL
+        logging.info("🌐 جاري استخدام البروكسي لتحميل فيديو يوتيوب...")
+
+    # إضافة الكوكيز في حال وجود الملف
+    if os.path.exists("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
+
+    if FFMPEG_PATH:
+        ydl_opts["ffmpeg_location"] = FFMPEG_PATH
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        return filename, info
+
+# --- التعامل مع أوامر والرسائل في البوت ---
+@bot.on_message(filters.command("start"))
+async def start_cmd(client: Client, message: Message):
+    await message.reply_text(
+        "⚡ **أهلاً بك في بوت التحميل الشامل!**\n\n"
+        "أرسل لي أي رابط فيديو (YouTube, TikTok, Instagram, Facebook...) "
+        "وسأقوم بتحميله وإرساله لك مباشرة بدعم حجم يصل إلى **2GB**."
+    )
+
+@bot.on_message(filters.text & ~filters.command(["start"]))
+async def handle_url(client: Client, message: Message):
+    url = message.text.strip()
+    if not url.startswith("http"):
+        await message.reply_text("❌ يرجى إرسال رابط صحيح يبتدئ بـ http أو https.")
+        return
+
+    status_msg = await message.reply_text("⏳ جاري تحليل الرابط وبدء التحميل...")
+    dest_template = f"{DOWNLOAD_DIR}/{message.id}_%(id)s.%(ext)s"
+    filepath = None
+
+    try:
+        loop = asyncio.get_running_loop()
+        filepath, info = await loop.run_in_executor(None, download_video, url, dest_template)
+        
+        size_mb, size_str = format_file_size(filepath)
+
+        if size_mb > 2000:
+            await status_msg.edit_text(f"❌ **عذراً، حجم الملف ({size_str}) يتجاوز الحد المسموح 2000MB.**")
+            return
+
+        await status_msg.edit_text(f"⬆️ **جاري رفع الفيديو إلى تليجرام...**\n💾 **الحجم:** `{size_str}`")
+
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=filepath,
+            caption=(
+                f"🎬 <b>{info.get('title', 'فيديو')}</b>\n"
+                f"💾 <b>الحجم:</b> {size_str}\n\n"
+                f"✅ <i>تم التحميل بنجاح!</i>"
+            ),
+            supports_streaming=True
+        )
+        await status_msg.delete()
+
+    except Exception as e:
+        logging.error("Download Error:", exc_info=True)
+        await status_msg.edit_text(f"❌ **حدث خطأ أثناء التنزيل:**\nتأكد من صحة الرابط أو جرب رابطاً آخر.")
+    finally:
+        if filepath and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+
+# --- التشغيل الرئيسي المصحح والمستقر ---
 async def main():
-    await start_web()
+    await start_web_server()
     await bot.start()
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🚀 البوت مستعد الآن تماماً!")
+    
+    # حظر التعليق باستخدام التسمية الصحيحة لمكتبة Hydrogram
+    try:
+        await bot.delete_webhooks(drop=True)
+    except Exception as e:
+        logging.warning(f"ملاحظة الـ Webhook: {e}")
+
+    logging.info("🚀 البوت متصل بنجاح ومستعد لاستقبال الرسائل!")
+    
     from hydrogram import idle
     await idle()
+    await bot.stop()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
