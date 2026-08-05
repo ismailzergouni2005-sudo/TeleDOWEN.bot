@@ -1,10 +1,33 @@
 import os
 import re
+import sys
 import time
 import shutil
 import logging
 import asyncio
 import threading
+import subprocess
+
+logging.basicConfig(level=logging.INFO)
+
+# --- تحديث yt-dlp تلقائياً قبل الاستيراد ---
+# يوتيوب يغيّر آلياته باستمرار، ونسخة yt-dlp قديمة = فشل متكرر بأخطاء مثل
+# "Sign in to confirm you're not a bot". نحاول تحديثها لآخر إصدار عند كل تشغيل.
+def update_yt_dlp():
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "yt-dlp"],
+            capture_output=True, text=True, timeout=90
+        )
+        if result.returncode == 0:
+            logging.info("✅ yt-dlp تم فحصه/تحديثه بنجاح.")
+        else:
+            logging.warning(f"⚠️ فشل تحديث yt-dlp: {result.stderr[:300]}")
+    except Exception as e:
+        logging.warning(f"⚠️ تعذر تحديث yt-dlp: {e}")
+
+update_yt_dlp()
+# ----------------------------------------
 
 # --- تفعيل مكتبة static-ffmpeg تلقائياً ---
 import static_ffmpeg
@@ -17,6 +40,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.request import HTTPXRequest
 import yt_dlp
 
+def periodic_yt_dlp_update(interval_hours=12):
+    """يعيد فحص التحديث دورياً؛ يُطبَّق فعلياً بعد إعادة تشغيل العملية القادمة
+    (Render/Railway تعيد التشغيل بشكل دوري، فهذا يمنع بقاء نسخة قديمة طويلاً)."""
+    while True:
+        time.sleep(interval_hours * 3600)
+        update_yt_dlp()
+
+threading.Thread(target=periodic_yt_dlp_update, daemon=True).start()
+
 app = Flask('')
 
 @app.route('/')
@@ -28,8 +60,6 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
-
-logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
@@ -287,9 +317,16 @@ INSTAGRAM_HEADERS = {
 }
 
 # يوتيوب يحظر الطلبات القادمة من عناوين IP الخاصة بالسيرفرات (VPS/Cloud) غالباً
-# برسالة "Sign in to confirm you're not a bot". الحل: نجبر yt-dlp على انتحال
-# عميل أندرويد/آيفون بدل عميل الويب، وهذا يتجاوز الحظر في أغلب الأحيان بدون كوكيز.
-YOUTUBE_EXTRACTOR_ARGS = {
+# برسالة "Sign in to confirm you're not a bot" — وهذا يحدث حتى لو الكوكيز صحيحة
+# 100%، لأن يوتيوب يراقب سمعة الـ IP نفسه بشكل منفصل عن الكوكيز.
+# مهم: عميل iOS تحديداً يتجاهل الكوكيز كلياً (يستخدم OAuth بدل كوكيز المتصفح)،
+# فإذا كانت الكوكيز موجودة لازم نستخدم عملاء يحترمونها فعلياً: web / mweb.
+YOUTUBE_CLIENTS_WITH_COOKIES = {
+    "youtube": {
+        "player_client": ["web", "mweb", "web_safari"],
+    }
+}
+YOUTUBE_CLIENTS_NO_COOKIES = {
     "youtube": {
         "player_client": ["android", "ios", "web"],
         "player_skip": ["webpage", "configs"],
@@ -299,7 +336,27 @@ YOUTUBE_EXTRACTOR_ARGS = {
 def is_youtube(url: str) -> bool:
     return bool(re.search(r'(youtube\.com|youtu\.be)', url))
 
+def cookies_file_looks_valid() -> bool:
+    """فحص سريع: هل الملف موجود، غير فارغ، وفيه كوكيز فعلية لدومين يوتيوب؟"""
+    path = "cookies.txt"
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        has_youtube_domain = "youtube.com" in content
+        has_session_cookie = any(k in content for k in ("SAPISID", "SID", "__Secure-3PSID", "LOGIN_INFO"))
+        if not has_youtube_domain:
+            logging.warning("⚠️ cookies.txt لا يحتوي على أي سطر بدومين youtube.com — الملف غير صالح لهذا الاستخدام.")
+        if not has_session_cookie:
+            logging.warning("⚠️ cookies.txt ما فيه كوكيز جلسة تسجيل دخول معروفة (SID/SAPISID) — قد يكون صُدّر من متصفح غير مسجل دخول.")
+        return has_youtube_domain and has_session_cookie
+    except Exception as e:
+        logging.warning(f"⚠️ تعذر قراءة cookies.txt: {e}")
+        return False
+
 def get_base_opts(url):
+    has_cookies = os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -308,8 +365,12 @@ def get_base_opts(url):
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
     }
     if is_youtube(url):
-        ydl_opts["extractor_args"] = YOUTUBE_EXTRACTOR_ARGS
-    if os.path.exists("cookies.txt"):
+        if has_cookies:
+            cookies_file_looks_valid()  # يسجل تحذيرات بالـ log لو فيه مشكلة بالملف
+        ydl_opts["extractor_args"] = (
+            YOUTUBE_CLIENTS_WITH_COOKIES if has_cookies else YOUTUBE_CLIENTS_NO_COOKIES
+        )
+    if has_cookies:
         ydl_opts["cookiefile"] = "cookies.txt"
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
