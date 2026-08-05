@@ -71,6 +71,10 @@ WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDG
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# سقف حجم الملف: 50MB افتراضياً (حد Telegram Bot API القياسي)، أو 2000MB (2GB)
+# تلقائياً إذا تم ضبط LOCAL_BOT_API_URL لاستخدام سيرفر Bot API محلي.
+MAX_UPLOAD_MB = 2000 if os.environ.get("LOCAL_BOT_API_URL") else 50
+
 FFMPEG_PATH = shutil.which("ffmpeg")
 if not FFMPEG_PATH:
     try:
@@ -124,7 +128,7 @@ TEXTS = {
         "downloading": "⏳ جاري بدء التحميل...",
         "processing": "جاري التحميل والمعالجة...",
         "downloaded_mb": "تم تحميل {mb:.1f} MB...",
-        "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد التحميل المسموح للبوتات هو 50MB.",
+        "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد الرفع الحالي للبوت هو {cap}MB.",
         "success": "✅ تم التحميل بنجاح!",
         "size": "💾 الحجم",
         "download_error": "❌ **حدث خطأ أثناء التحميل:**\n`{error}`"
@@ -167,7 +171,7 @@ TEXTS = {
         "downloading": "⏳ Starting download...",
         "processing": "Downloading & processing...",
         "downloaded_mb": "Downloaded {mb:.1f} MB...",
-        "too_large": "❌ **File size too large ({size})**.\nTelegram bot limit is 50MB.",
+        "too_large": "❌ **File size too large ({size})**.\nCurrent bot upload limit is {cap}MB.",
         "success": "✅ Downloaded successfully!",
         "size": "💾 Size",
         "download_error": "❌ **An error occurred during download:**\n`{error}`"
@@ -398,7 +402,7 @@ async def edit_progress_message(status_msg, text, reply_markup=None):
         except Exception:
             pass
 
-async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
+async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang, spinner_msg=None):
     t = TEXTS[lang]
     frame = 0
     last_text = None
@@ -413,21 +417,29 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
                 mb = (state.get("downloaded") or 0) / (1024 * 1024)
                 body = t["downloaded_mb"].format(mb=mb)
 
-            text = f"{meta_caption}\n\n{SPINNER_FRAMES[frame]} {t['processing']}\n{body}"
+            text = f"{meta_caption}\n\n{t['processing']}\n{body}"
 
             now = time.time()
-            if text != last_text and (now - last_update) >= 1.5:
+            if (text != last_text or spinner_msg) and (now - last_update) >= 1.5:
                 last_text = text
                 last_update = now
                 await edit_progress_message(status_msg, text, reply_markup=build_cancel_keyboard(lang))
+                # رسالة منفصلة تحتوي على رمز الساعة فقط بدون أي نص آخر —
+                # تيليجرام يكبّر تلقائياً الرسائل المكوّنة من إيموجي واحد فقط (حتى 3)،
+                # وهذه هي الطريقة الوحيدة لعرض الساعة بحجم أكبر داخل بوت (لا يوجد تحكم بحجم الخط في الـ Bot API).
+                if spinner_msg:
+                    try:
+                        await spinner_msg.edit_text(SPINNER_FRAMES[frame])
+                    except Exception:
+                        pass
 
             await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=180):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=180, spinner_msg=None):
     loop = asyncio.get_running_loop()
-    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang))
+    ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang, spinner_msg))
     start_time = time.time()
     try:
         download_task = loop.run_in_executor(None, func, *args)
@@ -451,10 +463,10 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang
     t = TEXTS[lang]
     size_mb, file_size_str = format_file_size(filepath)
     
-    if size_mb > 50:
+    if size_mb > MAX_UPLOAD_MB:
         await edit_progress_message(
             status_msg,
-            f"{meta_caption}\n\n{t['too_large'].format(size=file_size_str)}",
+            f"{meta_caption}\n\n{t['too_large'].format(size=file_size_str, cap=MAX_UPLOAD_MB)}",
             reply_markup=build_reselect_keyboard(lang)
         )
         if os.path.exists(filepath):
@@ -638,12 +650,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
     state = {"percent": None, "downloaded": 0}
 
+    # رسالة منفصلة للساعة الدوارة فقط، تظهر بحجم مكبّر تلقائياً (راجع الشرح في progress_ticker)
+    spinner_msg = None
+    try:
+        spinner_msg = await bot.send_message(chat_id=chat_id, text=SPINNER_FRAMES[0])
+    except Exception:
+        spinner_msg = None
+
     try:
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", height),
-                status_msg, meta_caption, state, cancel_event, lang
+                status_msg, meta_caption, state, cancel_event, lang, spinner_msg=spinner_msg
             )
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
 
@@ -651,14 +670,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mode = query.data.split("_")[1]
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, mode, None),
-                status_msg, meta_caption, state, cancel_event, lang
+                status_msg, meta_caption, state, cancel_event, lang, spinner_msg=spinner_msg
             )
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=True)
 
         elif query.data == "v_instant":
             filepath, _ = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", None),
-                status_msg, meta_caption, state, cancel_event, lang
+                status_msg, meta_caption, state, cancel_event, lang, spinner_msg=spinner_msg
             )
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
 
@@ -671,13 +690,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     finally:
         context.user_data.pop("active_cancel_event", None)
+        if spinner_msg:
+            try:
+                await spinner_msg.delete()
+            except Exception:
+                pass
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error("حدث خطأ:", exc_info=context.error)
 
 def main():
     request = HTTPXRequest(connect_timeout=15, read_timeout=100, write_timeout=100)
-    app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
+    builder = Application.builder().token(TOKEN).request(request).concurrent_updates(True)
+
+    # سيرفر Bot API محلي (self-hosted) يرفع سقف الرفع من 50MB إلى ~2GB.
+    # فعّله بضبط متغير البيئة LOCAL_BOT_API_URL على عنوان السيرفر المحلي، مثل:
+    # http://localhost:8081  (راجع telegram-bot-api / tdlib على GitHub لتشغيله)
+    local_api_url = os.environ.get("LOCAL_BOT_API_URL")
+    if local_api_url:
+        builder = builder.base_url(f"{local_api_url}/bot").base_file_url(f"{local_api_url}/file/bot")
+        logging.info(f"✅ استخدام سيرفر Bot API محلي: {local_api_url} — سقف الرفع أصبح ~2GB.")
+
+    app = builder.build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
