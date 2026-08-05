@@ -142,20 +142,17 @@ async def handle_url(client: Client, message: Message):
                 pass
 
 # --- التشغيل الرئيسي ---
+# --- التشغيل الرئيسي المضمون ---
 async def main():
+    # تشغيل سيرفر الويب الخاص بـ Render
     await start_web_server()
-    await bot.start()
     
-    try:
+    # تشغيل البوت وإعادة تعيين التحديثات
+    async with bot:
         await bot.delete_webhook(drop_pending_updates=True)
-    except Exception:
-        pass
-
-    logging.info("🚀 البوت متصل ومستعد لاستقبال الرسائل!")
-    
-    from hydrogram import idle
-    await idle()
-    await bot.stop()
+        logging.info("🚀 تم حذف Webhook القديم وبدأ الاستماع للرسائل بنجاح!")
+        from hydrogram import idle
+        await idle()
 
 if __name__ == '__main__':
     asyncio.run(main())
