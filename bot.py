@@ -79,7 +79,9 @@ if not FFMPEG_PATH:
     except Exception:
         FFMPEG_PATH = None
 
-SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+# سبينر دائري حقيقي: عقارب ساعة تدور بشكل متصل (12 إطار)، يعطي شكل دائرة تدور فعلياً
+# كأنها مؤشر بحث/تحميل (بدل الـ braille السابق الذي شكله نقاط وليس دائرة)
+SPINNER_FRAMES = ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
 
 # ---------------- النصوص متعددة اللغات ----------------
 
@@ -95,8 +97,7 @@ TEXTS = {
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
             "<code> ▌ F A C E B O O K </code>\n"
-            "<code> ▌ X ( T W I T T E R ) </code>\n"
-            "<code> ▌ Y O U T U B E </code>\n\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
         ),
@@ -105,6 +106,7 @@ TEXTS = {
         "choose_format": "👇 **اختر الصيغة والجودة المطلوبة:**",
         "timeout": "⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.",
         "analyze_error": "❌ تعذر تحليل الرابط:\n`{error}`",
+        "youtube_unsupported": "⚠️ عذراً، منصة يوتيوب غير مدعومة حالياً في البوت.\nيرجى استخدام رابط من: تيك توك، إنستغرام، بينتيريست، فيسبوك، أو إكس (تويتر).",
         "account": "👤 الحساب",
         "unknown": "غير معروف",
         "description": "📝 الوصف",
@@ -138,8 +140,7 @@ TEXTS = {
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
             "<code> ▌ F A C E B O O K </code>\n"
-            "<code> ▌ X ( T W I T T E R ) </code>\n"
-            "<code> ▌ Y O U T U B E </code>\n\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚡ <i>Just send any video link now!</i>"
         ),
@@ -148,6 +149,7 @@ TEXTS = {
         "choose_format": "👇 **Select the desired format and quality:**",
         "timeout": "⏱ Checking took too long. Please try again later.",
         "analyze_error": "❌ Failed to analyze link:\n`{error}`",
+        "youtube_unsupported": "⚠️ Sorry, YouTube is not supported by this bot right now.\nPlease use a link from: TikTok, Instagram, Pinterest, Facebook, or X (Twitter).",
         "account": "👤 Account",
         "unknown": "Unknown",
         "description": "📝 Description",
@@ -178,6 +180,9 @@ def clean_url(url: str) -> str:
         if match:
             return match.group(1) + "/"
     return url
+
+def is_youtube(url: str) -> bool:
+    return bool(re.search(r'(youtube\.com|youtu\.be)', url))
 
 # ---------------- أدوات التنسيق والواجهة ----------------
 
@@ -316,47 +321,7 @@ INSTAGRAM_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
 
-# يوتيوب يحظر الطلبات القادمة من عناوين IP الخاصة بالسيرفرات (VPS/Cloud) غالباً
-# برسالة "Sign in to confirm you're not a bot" — وهذا يحدث حتى لو الكوكيز صحيحة
-# 100%، لأن يوتيوب يراقب سمعة الـ IP نفسه بشكل منفصل عن الكوكيز.
-# مهم: عميل iOS تحديداً يتجاهل الكوكيز كلياً (يستخدم OAuth بدل كوكيز المتصفح)،
-# فإذا كانت الكوكيز موجودة لازم نستخدم عملاء يحترمونها فعلياً: web / mweb.
-YOUTUBE_CLIENTS_WITH_COOKIES = {
-    "youtube": {
-        "player_client": ["web", "mweb", "web_safari"],
-    }
-}
-YOUTUBE_CLIENTS_NO_COOKIES = {
-    "youtube": {
-        "player_client": ["android", "ios", "web"],
-        "player_skip": ["webpage", "configs"],
-    }
-}
-
-def is_youtube(url: str) -> bool:
-    return bool(re.search(r'(youtube\.com|youtu\.be)', url))
-
-def cookies_file_looks_valid() -> bool:
-    """فحص سريع: هل الملف موجود، غير فارغ، وفيه كوكيز فعلية لدومين يوتيوب؟"""
-    path = "cookies.txt"
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        return False
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        has_youtube_domain = "youtube.com" in content
-        has_session_cookie = any(k in content for k in ("SAPISID", "SID", "__Secure-3PSID", "LOGIN_INFO"))
-        if not has_youtube_domain:
-            logging.warning("⚠️ cookies.txt لا يحتوي على أي سطر بدومين youtube.com — الملف غير صالح لهذا الاستخدام.")
-        if not has_session_cookie:
-            logging.warning("⚠️ cookies.txt ما فيه كوكيز جلسة تسجيل دخول معروفة (SID/SAPISID) — قد يكون صُدّر من متصفح غير مسجل دخول.")
-        return has_youtube_domain and has_session_cookie
-    except Exception as e:
-        logging.warning(f"⚠️ تعذر قراءة cookies.txt: {e}")
-        return False
-
 def get_base_opts(url):
-    has_cookies = os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -364,14 +329,6 @@ def get_base_opts(url):
         "retries": 5,
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
     }
-    if is_youtube(url):
-        if has_cookies:
-            cookies_file_looks_valid()  # يسجل تحذيرات بالـ log لو فيه مشكلة بالملف
-        ydl_opts["extractor_args"] = (
-            YOUTUBE_CLIENTS_WITH_COOKIES if has_cookies else YOUTUBE_CLIENTS_NO_COOKIES
-        )
-    if has_cookies:
-        ydl_opts["cookiefile"] = "cookies.txt"
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
     return ydl_opts
@@ -581,6 +538,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = clean_url(match.group(0))
+
+    # يوتيوب غير مدعوم حالياً بسبب حظر يوتيوب المتكرر لطلبات السيرفرات (راجع الشرح في اللوجات).
+    # بدل محاولة التحليل والفشل، نخبر المستخدم فوراً بوضوح.
+    if is_youtube(url):
+        await update.message.reply_text(t["youtube_unsupported"])
+        return
+
     context.user_data['download_url'] = url
 
     checking_msg = await update.message.reply_text(t["checking"])
