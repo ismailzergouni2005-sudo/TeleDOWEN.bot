@@ -65,7 +65,8 @@ TEXTS = {
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
             "<code> ▌ F A C E B O O K </code>\n"
-            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n"
+            "<code> ▌ Y O U T U B E </code>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
         ),
@@ -107,7 +108,8 @@ TEXTS = {
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
             "<code> ▌ F A C E B O O K </code>\n"
-            "<code> ▌ X ( T W I T T E R ) </code>\n\n"
+            "<code> ▌ X ( T W I T T E R ) </code>\n"
+            "<code> ▌ Y O U T U B E </code>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚡ <i>Just send any video link now!</i>"
         ),
@@ -284,6 +286,19 @@ INSTAGRAM_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
 
+# يوتيوب يحظر الطلبات القادمة من عناوين IP الخاصة بالسيرفرات (VPS/Cloud) غالباً
+# برسالة "Sign in to confirm you're not a bot". الحل: نجبر yt-dlp على انتحال
+# عميل أندرويد/آيفون بدل عميل الويب، وهذا يتجاوز الحظر في أغلب الأحيان بدون كوكيز.
+YOUTUBE_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["android", "ios", "web"],
+        "player_skip": ["webpage", "configs"],
+    }
+}
+
+def is_youtube(url: str) -> bool:
+    return bool(re.search(r'(youtube\.com|youtu\.be)', url))
+
 def get_base_opts(url):
     ydl_opts = {
         "quiet": True,
@@ -292,6 +307,8 @@ def get_base_opts(url):
         "retries": 5,
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
     }
+    if is_youtube(url):
+        ydl_opts["extractor_args"] = YOUTUBE_EXTRACTOR_ARGS
     if os.path.exists("cookies.txt"):
         ydl_opts["cookiefile"] = "cookies.txt"
     if FFMPEG_PATH:
