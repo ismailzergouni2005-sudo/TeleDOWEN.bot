@@ -6,3 +6,5 @@ imageio-ffmpeg
 static-ffmpeg
 aiohttp
 hydrogram
+rembg
+onnxruntime
