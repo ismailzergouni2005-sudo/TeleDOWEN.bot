@@ -35,6 +35,20 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
+# ---------- [تصحيح] إنشاء ملف الكوكيز تلقائياً من متغير بيئة ----------
+# ضع محتوى ملف cookies.txt كاملاً في متغير البيئة YT_COOKIES
+# حتى لا ترفع الكوكيز على GitHub (لأنها تمنح الوصول لحسابك).
+COOKIES_FILE = "cookies.txt"
+_cookies_env = os.environ.get("YT_COOKIES")
+if _cookies_env:
+    try:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as _cf:
+            _cf.write(_cookies_env)
+        logging.info("✅ تم إنشاء ملف cookies.txt من متغير البيئة.")
+    except Exception as _e:
+        logging.error(f"فشل إنشاء ملف الكوكيز: {_e}")
+# ---------------------------------------------------------------------
+
 WELCOME_IMAGE_URL = "https://files.catbox.moe/heevbw.jpg"
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
 
@@ -61,6 +75,7 @@ TEXTS = {
             "<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
             "أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
             "🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
+            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -103,6 +118,7 @@ TEXTS = {
             "<blockquote><b> ⚡ Welcome to Fast Downloader Bot! ⚡ </b></blockquote>\n\n"
             "I'm here to help you download videos and audio clips in the highest possible quality.\n\n"
             "🌐 <b><u>Currently Supported Platforms:</u></b>\n\n"
+            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -147,6 +163,9 @@ def clean_url(url: str) -> str:
             return match.group(1) + "/"
     return url
 
+def is_youtube(url: str) -> bool:
+    return any(d in url for d in ("youtube.com", "youtu.be"))
+
 # ---------------- أدوات التنسيق والواجهة ----------------
 
 def format_file_size(filepath):
@@ -181,12 +200,13 @@ def format_count(n):
         return f"{n/1_000:.1f}K"
     return str(n)
 
-def build_meta_caption(lang, uploader=None, uploader_id=None, duration=None, views=None, title=None, description=None, quality=None):
+def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, views=None, title=None, description=None, quality=None):
     t = TEXTS[lang]
     lines = []
-    
-    if uploader_id:
-        uploader_link = f'<a href="https://instagram.com/{uploader_id}">{uploader or uploader_id}</a>'
+
+    # [تصحيح] استخدام رابط الحساب الحقيقي من المنصة بدل ربطه دائماً بإنستغرام
+    if uploader_url:
+        uploader_link = f'<a href="{uploader_url}">{uploader or t["unknown"]}</a>'
         lines.append(f"{t['account']}: {uploader_link}")
     elif uploader:
         lines.append(f"{t['account']}: <b>{uploader}</b>")
@@ -198,18 +218,18 @@ def build_meta_caption(lang, uploader=None, uploader_id=None, duration=None, vie
         clean_text = text_content.strip().split('\n')[0]
         short_text = clean_text if len(clean_text) <= 80 else clean_text[:77] + "..."
         lines.append(f"{t['description']}: {short_text}")
-        
+
     formatted_duration = format_duration(duration)
     if formatted_duration:
         lines.append(f"{t['duration']}: {formatted_duration}")
-        
+
     formatted_views = format_count(views)
     if formatted_views and views != 0:
         lines.append(f"{t['views']}: {formatted_views}")
-        
+
     if quality:
         lines.append(f"{t['quality']}: {quality}")
-        
+
     return "\n".join(lines)
 
 # ---------------- تجميع خيارات الجودة ----------------
@@ -227,7 +247,7 @@ def get_available_options(info):
 
         vcodec = f.get("vcodec")
         ext = f.get("ext", "mp4")
-        
+
         if not h or vcodec == "none":
             continue
 
@@ -292,10 +312,30 @@ def get_base_opts(url):
         "retries": 5,
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
     }
-    if os.path.exists("cookies.txt"):
-        ydl_opts["cookiefile"] = "cookies.txt"
+
+    has_cookies = os.path.exists(COOKIES_FILE)
+    if has_cookies:
+        ydl_opts["cookiefile"] = COOKIES_FILE
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
+
+    # ---------- [تصحيح] إعدادات خاصة بيوتيوب ----------
+    if is_youtube(url):
+        # بدون كوكيز: نستخدم عملاء أقل تعرضاً لطلب تسجيل الدخول
+        if not has_cookies:
+            ydl_opts["extractor_args"] = {
+                "youtube": {"player_client": ["tv", "mweb", "web_safari"]}
+            }
+        # يوتيوب يحتاج بيئة JavaScript لفك التوقيعات (إن كانت متوفرة)
+        js_runtimes = {}
+        if shutil.which("deno"):
+            js_runtimes["deno"] = {}
+        if shutil.which("node"):
+            js_runtimes["node"] = {}
+        if js_runtimes:
+            ydl_opts["js_runtimes"] = js_runtimes
+    # --------------------------------------------------
+
     return ydl_opts
 
 def extract_info_only(url):
@@ -415,7 +455,7 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
 async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False):
     t = TEXTS[lang]
     size_mb, file_size_str = format_file_size(filepath)
-    
+
     if size_mb > 50:
         await edit_progress_message(
             status_msg,
@@ -469,10 +509,10 @@ async def send_welcome(query, context: ContextTypes.DEFAULT_TYPE, lang: str):
     user = query.from_user
     name = user.first_name or "User"
     user_id = user.id
-    
+
     blue_user_link = f'<a href="tg://user?id={user_id}">« {name} »</a>'
     welcome_text = t["welcome"].format(user_link=blue_user_link)
-    
+
     try:
         await query.message.reply_photo(
             photo=WELCOME_IMAGE_URL,
@@ -486,7 +526,7 @@ async def send_welcome(query, context: ContextTypes.DEFAULT_TYPE, lang: str):
             parse_mode='HTML',
             disable_web_page_preview=True
         )
-    
+
     try:
         await query.message.reply_sticker(sticker=WELCOME_STICKER_ID)
     except Exception as e:
@@ -578,7 +618,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     meta_caption = build_meta_caption(
         lang=lang,
         uploader=info.get("uploader") or info.get("channel"),
-        uploader_id=info.get("uploader_id") or info.get("channel_id"),
+        uploader_url=info.get("uploader_url") or info.get("channel_url"),
         duration=info.get("duration"),
         views=info.get("view_count"),
         title=info.get("title"),
