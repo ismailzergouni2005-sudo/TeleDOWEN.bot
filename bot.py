@@ -11,6 +11,16 @@ import static_ffmpeg
 static_ffmpeg.add_paths()
 # ----------------------------------------
 
+# ---------- [تصحيح] إضافة مسار deno (المثبّت عبر pip) إلى PATH ----------
+try:
+    import deno as _deno_pkg
+    _deno_dir = os.path.dirname(_deno_pkg.find_deno_bin()) if hasattr(_deno_pkg, "find_deno_bin") else None
+    if _deno_dir:
+        os.environ["PATH"] = _deno_dir + os.pathsep + os.environ.get("PATH", "")
+except Exception:
+    pass
+# ----------------------------------------------------------------------
+
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -35,9 +45,7 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# ---------- [تصحيح] إنشاء ملف الكوكيز تلقائياً من متغير بيئة ----------
-# ضع محتوى ملف cookies.txt كاملاً في متغير البيئة YT_COOKIES
-# حتى لا ترفع الكوكيز على GitHub (لأنها تمنح الوصول لحسابك).
+# ---------- إنشاء ملف الكوكيز تلقائياً من متغير بيئة ----------
 COOKIES_FILE = "cookies.txt"
 _cookies_env = os.environ.get("YT_COOKIES")
 if _cookies_env:
@@ -62,6 +70,10 @@ if not FFMPEG_PATH:
         FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         FFMPEG_PATH = None
+
+# ---------- [تصحيح] تسجيل حالة بيئة JavaScript عند التشغيل ----------
+logging.info(f"deno: {shutil.which('deno')} | node: {shutil.which('node')}")
+# ---------------------------------------------------------------------
 
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
@@ -204,7 +216,6 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
     t = TEXTS[lang]
     lines = []
 
-    # [تصحيح] استخدام رابط الحساب الحقيقي من المنصة بدل ربطه دائماً بإنستغرام
     if uploader_url:
         uploader_link = f'<a href="{uploader_url}">{uploader or t["unknown"]}</a>'
         lines.append(f"{t['account']}: {uploader_link}")
@@ -319,14 +330,13 @@ def get_base_opts(url):
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
-    # ---------- [تصحيح] إعدادات خاصة بيوتيوب ----------
+    # ---------- إعدادات خاصة بيوتيوب ----------
     if is_youtube(url):
-        # بدون كوكيز: نستخدم عملاء أقل تعرضاً لطلب تسجيل الدخول
         if not has_cookies:
             ydl_opts["extractor_args"] = {
                 "youtube": {"player_client": ["tv", "mweb", "web_safari"]}
             }
-        # يوتيوب يحتاج بيئة JavaScript لفك التوقيعات (إن كانت متوفرة)
+        # [تصحيح] تفعيل بيئة JavaScript لفك التوقيعات
         js_runtimes = {}
         if shutil.which("deno"):
             js_runtimes["deno"] = {}
@@ -334,6 +344,8 @@ def get_base_opts(url):
             js_runtimes["node"] = {}
         if js_runtimes:
             ydl_opts["js_runtimes"] = js_runtimes
+        # [تصحيح] السماح بتنزيل مكوّن حل التحدي (yt-dlp-ejs) من GitHub عند الحاجة
+        ydl_opts["remote_components"] = ["ejs:github"]
     # --------------------------------------------------
 
     return ydl_opts
@@ -341,6 +353,9 @@ def get_base_opts(url):
 def extract_info_only(url):
     ydl_opts = get_base_opts(url)
     ydl_opts["skip_download"] = True
+    # [تصحيح] عدم إفشال الفحص إذا لم تتوفر صيغة؛ نريد المعلومات فقط
+    ydl_opts["ignore_no_formats_error"] = True
+    ydl_opts["format"] = "all"
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -547,9 +562,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     checking_msg = await update.message.reply_text(t["checking"])
     try:
+        # [تصحيح] زيادة المهلة إلى 60 ثانية لأن فك تشفير يوتيوب يحتاج وقتاً أطول
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
-            timeout=25
+            timeout=60
         )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
