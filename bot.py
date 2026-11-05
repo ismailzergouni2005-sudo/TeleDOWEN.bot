@@ -11,7 +11,7 @@ import static_ffmpeg
 static_ffmpeg.add_paths()
 # ----------------------------------------
 
-# ---------- [تصحيح] إضافة مسار deno (المثبّت عبر pip) إلى PATH ----------
+# ---------- إضافة مسار deno (المثبّت عبر pip) إلى PATH ----------
 try:
     import deno as _deno_pkg
     _deno_dir = os.path.dirname(_deno_pkg.find_deno_bin()) if hasattr(_deno_pkg, "find_deno_bin") else None
@@ -45,17 +45,37 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# ---------- إنشاء ملف الكوكيز تلقائياً من متغير بيئة ----------
-COOKIES_FILE = "cookies.txt"
+# ---------- [تصحيح] تجهيز ملف الكوكيز في مسار قابل للكتابة ----------
+# المصادر بالترتيب: متغير YT_COOKIES ثم Secret File في Render ثم ملف محلي
+COOKIES_FILE = "/tmp/yt_cookies.txt"
+_secret_paths = ["/etc/secrets/cookies.txt", "cookies.txt"]
 _cookies_env = os.environ.get("YT_COOKIES")
-if _cookies_env:
-    try:
+
+try:
+    if _cookies_env and _cookies_env.strip():
         with open(COOKIES_FILE, "w", encoding="utf-8") as _cf:
-            _cf.write(_cookies_env)
-        logging.info("✅ تم إنشاء ملف cookies.txt من متغير البيئة.")
-    except Exception as _e:
-        logging.error(f"فشل إنشاء ملف الكوكيز: {_e}")
+            _cf.write(_cookies_env.strip() + "\n")
+        logging.info("✅ تم إنشاء ملف الكوكيز من متغير البيئة YT_COOKIES.")
+    else:
+        for _p in _secret_paths:
+            if os.path.exists(_p):
+                shutil.copyfile(_p, COOKIES_FILE)
+                logging.info(f"✅ تم نسخ ملف الكوكيز من: {_p}")
+                break
+        else:
+            logging.warning("⚠️ لم يتم العثور على أي ملف كوكيز.")
+except Exception as _e:
+    logging.error(f"فشل تجهيز ملف الكوكيز: {_e}")
+
+if os.path.exists(COOKIES_FILE):
+    with open(COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _cf:
+        _content = _cf.read()
+    _count = len([l for l in _content.splitlines() if l.strip() and not l.startswith("#")])
+    logging.info(f"🍪 عدد أسطر الكوكيز: {_count} | يحتوي youtube: {'youtube.com' in _content}")
 # ---------------------------------------------------------------------
+
+# بروكسي اختياري (مثال: http://user:pass@host:port) يوضع في متغير PROXY_URL
+PROXY_URL = os.environ.get("PROXY_URL")
 
 WELCOME_IMAGE_URL = "https://files.catbox.moe/heevbw.jpg"
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEtNrJqciCsb_KyhKNta-pPJzCKUefSigACVAADQbVWDGq3-McIjQH6PQQ"
@@ -71,9 +91,7 @@ if not FFMPEG_PATH:
     except Exception:
         FFMPEG_PATH = None
 
-# ---------- [تصحيح] تسجيل حالة بيئة JavaScript عند التشغيل ----------
 logging.info(f"deno: {shutil.which('deno')} | node: {shutil.which('node')}")
-# ---------------------------------------------------------------------
 
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
@@ -315,7 +333,16 @@ INSTAGRAM_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
 
-def get_base_opts(url):
+# [تصحيح] قائمة عملاء يوتيوب للتجربة بالتتابع عند الفشل
+YT_CLIENT_SETS = [
+    ["tv", "web_safari"],
+    ["mweb"],
+    ["ios"],
+    ["android_vr"],
+    ["web"],
+]
+
+def get_base_opts(url, yt_clients=None):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -324,19 +351,21 @@ def get_base_opts(url):
         "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
     }
 
-    has_cookies = os.path.exists(COOKIES_FILE)
+    # [تصحيح] استخدام الكوكيز فقط لمواقع يوتيوب (تجنب إرسالها لباقي المواقع)
+    has_cookies = os.path.exists(COOKIES_FILE) and is_youtube(url)
     if has_cookies:
         ydl_opts["cookiefile"] = COOKIES_FILE
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
+    if PROXY_URL:
+        ydl_opts["proxy"] = PROXY_URL
 
-    # ---------- إعدادات خاصة بيوتيوب ----------
     if is_youtube(url):
-        if not has_cookies:
-            ydl_opts["extractor_args"] = {
-                "youtube": {"player_client": ["tv", "mweb", "web_safari"]}
-            }
-        # [تصحيح] تفعيل بيئة JavaScript لفك التوقيعات
+        extractor_args = {}
+        if yt_clients:
+            extractor_args["player_client"] = yt_clients
+        ydl_opts["extractor_args"] = {"youtube": extractor_args} if extractor_args else {}
+
         js_runtimes = {}
         if shutil.which("deno"):
             js_runtimes["deno"] = {}
@@ -344,20 +373,25 @@ def get_base_opts(url):
             js_runtimes["node"] = {}
         if js_runtimes:
             ydl_opts["js_runtimes"] = js_runtimes
-        # [تصحيح] السماح بتنزيل مكوّن حل التحدي (yt-dlp-ejs) من GitHub عند الحاجة
         ydl_opts["remote_components"] = ["ejs:github"]
-    # --------------------------------------------------
 
     return ydl_opts
 
 def extract_info_only(url):
-    ydl_opts = get_base_opts(url)
-    ydl_opts["skip_download"] = True
-    # [تصحيح] عدم إفشال الفحص إذا لم تتوفر صيغة؛ نريد المعلومات فقط
-    ydl_opts["ignore_no_formats_error"] = True
-    ydl_opts["format"] = "all"
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    last_err = None
+    client_sets = YT_CLIENT_SETS if is_youtube(url) else [None]
+    for clients in client_sets:
+        ydl_opts = get_base_opts(url, clients)
+        ydl_opts["skip_download"] = True
+        ydl_opts["ignore_no_formats_error"] = True
+        ydl_opts["format"] = "all"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as e:
+            last_err = e
+            logging.warning(f"فشل الفحص بالعملاء {clients}: {str(e)[:100]}")
+    raise last_err
 
 def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="video", height=None):
     def hook(d):
@@ -370,42 +404,58 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             if total:
                 state["percent"] = downloaded / total * 100
 
-    ydl_opts = get_base_opts(url)
-    ydl_opts["outtmpl"] = dest_template
-    ydl_opts["progress_hooks"] = [hook]
+    # [تصحيح] تجربة عدة عملاء ليوتيوب بالتتابع عند الفشل
+    client_sets = YT_CLIENT_SETS if is_youtube(url) else [None]
+    last_err = None
 
-    if mode == "mp3":
-        ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
-    elif height:
-        ydl_opts["format"] = f"bv*[height<={height}]+ba/b[height<={height}]/best"
-    else:
-        ydl_opts["format"] = "bv*+ba/b/best"
+    for clients in client_sets:
+        if cancel_event.is_set():
+            raise Exception("CANCELLED_BY_USER")
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
+        ydl_opts = get_base_opts(url, clients)
+        ydl_opts["outtmpl"] = dest_template
+        ydl_opts["progress_hooks"] = [hook]
 
         if mode == "mp3":
-            base, _ = os.path.splitext(filename)
-            if os.path.exists(base + ".mp3"):
-                filename = base + ".mp3"
+            ydl_opts["format"] = "bestaudio/best"
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        elif height:
+            ydl_opts["format"] = f"bv*[height<={height}]+ba/b[height<={height}]/best"
+        else:
+            ydl_opts["format"] = "bv*+ba/b/best"
 
-        final_file = filename
-        if not os.path.exists(final_file):
-            base_no_ext, _ = os.path.splitext(filename)
-            directory = os.path.dirname(base_no_ext) or "."
-            base_name = os.path.basename(base_no_ext)
-            for fname in os.listdir(directory):
-                if fname.startswith(base_name):
-                    final_file = os.path.join(directory, fname)
-                    break
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
 
-        return final_file, info
+                if mode == "mp3":
+                    base, _ = os.path.splitext(filename)
+                    if os.path.exists(base + ".mp3"):
+                        filename = base + ".mp3"
+
+                final_file = filename
+                if not os.path.exists(final_file):
+                    base_no_ext, _ = os.path.splitext(filename)
+                    directory = os.path.dirname(base_no_ext) or "."
+                    base_name = os.path.basename(base_no_ext)
+                    for fname in os.listdir(directory):
+                        if fname.startswith(base_name):
+                            final_file = os.path.join(directory, fname)
+                            break
+
+                return final_file, info
+        except Exception as e:
+            if "CANCELLED_BY_USER" in str(e):
+                raise
+            last_err = e
+            logging.warning(f"فشل التحميل بالعملاء {clients}: {str(e)[:100]}")
+
+    raise last_err
 
 # ---------------- إدارة البث والتحديث ----------------
 
@@ -445,7 +495,7 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=180):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=240):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang))
     start_time = time.time()
@@ -562,10 +612,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     checking_msg = await update.message.reply_text(t["checking"])
     try:
-        # [تصحيح] زيادة المهلة إلى 60 ثانية لأن فك تشفير يوتيوب يحتاج وقتاً أطول
         info = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
-            timeout=60
+            timeout=90
         )
         context.user_data['ytdlp_info'] = info
         video_opts = get_available_options(info)
