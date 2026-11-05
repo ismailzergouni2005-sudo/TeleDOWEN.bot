@@ -1,5 +1,5 @@
-python-telegram-bot
-yt-dlp
+python-telegram-bot[job-queue]
+yt-dlp[default]
 Flask
 httpx
 imageio-ffmpeg
@@ -8,3 +8,4 @@ aiohttp
 hydrogram
 rembg
 onnxruntime
+deno
