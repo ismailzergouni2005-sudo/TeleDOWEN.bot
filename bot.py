@@ -43,38 +43,78 @@ if not TOKEN:
 # المصادر بالترتيب: SITE_COOKIES ثم YT_COOKIES (للتوافق) ثم Secret File ثم ملف محلي
 COOKIES_FILE = "/tmp/site_cookies.txt"
 _secret_paths = ["/etc/secrets/cookies.txt", "cookies.txt"]
-_cookies_env = os.environ.get("SITE_COOKIES") or os.environ.get("YT_COOKIES")
 
-try:
-    if _cookies_env and _cookies_env.strip():
-        _data = _cookies_env.strip()
-        if not _data.startswith("# Netscape") and not _data.startswith("# HTTP Cookie"):
-            _data = "# Netscape HTTP Cookie File\n" + _data
-        with open(COOKIES_FILE, "w", encoding="utf-8") as _cf:
-            _cf.write(_data + "\n")
-        logging.info("✅ تم إنشاء ملف الكوكيز من متغير البيئة.")
+def normalize_cookies(data: str) -> str:
+    """
+    إصلاح تنسيق الكوكيز: متغيرات البيئة غالباً تحوّل الـ Tab إلى مسافات،
+    وصيغة Netscape تتطلب 7 أعمدة مفصولة بـ Tab.
+    """
+    out = ["# Netscape HTTP Cookie File"]
+    for line in data.replace("\r", "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("# Netscape") or s.startswith("# HTTP Cookie"):
+            continue
+        if s.startswith("#") and not s.startswith("#HttpOnly_"):
+            continue
+        if "\t" in s and len(s.split("\t")) >= 7:
+            out.append(s)
+            continue
+        parts = s.split(None, 6)
+        if len(parts) == 7:
+            out.append("\t".join(parts))
+    return "\n".join(out) + "\n"
+
+def prepare_cookies():
+    raw = None
+    source = None
+    env_data = os.environ.get("SITE_COOKIES") or os.environ.get("YT_COOKIES")
+    if env_data and env_data.strip():
+        raw, source = env_data, "متغير البيئة"
     else:
-        for _p in _secret_paths:
-            if os.path.exists(_p):
-                shutil.copyfile(_p, COOKIES_FILE)
-                logging.info(f"✅ تم نسخ ملف الكوكيز من: {_p}")
-                break
-        else:
-            logging.info("ℹ️ لا يوجد ملف كوكيز (اختياري).")
-except Exception as _e:
-    logging.error(f"فشل تجهيز ملف الكوكيز: {_e}")
+        for p in _secret_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                        raw, source = f.read(), p
+                    break
+                except Exception as e:
+                    logging.error(f"تعذر قراءة {p}: {e}")
+    if not raw:
+        logging.info("ℹ️ لا يوجد ملف كوكيز (إنستغرام وفيسبوك يحتاجانه غالباً).")
+        return
 
-# التحقق من صلاحية الملف حتى لا يعطل كل التحميلات إن كان تالفاً
-if os.path.exists(COOKIES_FILE):
     try:
-        MozillaCookieJar(COOKIES_FILE).load(ignore_discard=True, ignore_expires=True)
-        logging.info("🍪 ملف الكوكيز صالح.")
-    except Exception as _e:
-        logging.error(f"⚠️ ملف الكوكيز تالف وسيتم تجاهله: {_e}")
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(normalize_cookies(raw))
+        logging.info(f"✅ تم تجهيز الكوكيز من: {source}")
+    except Exception as e:
+        logging.error(f"فشل تجهيز ملف الكوكيز: {e}")
+        return
+
+    # التحقق من الصلاحية وفحص الكوكيز المهمة
+    try:
+        jar = MozillaCookieJar(COOKIES_FILE)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        domains = {c.domain for c in jar}
+        names = {(c.domain, c.name) for c in jar}
+        has_ig = any("instagram.com" in d for d in domains)
+        has_ig_session = any("instagram.com" in d and n == "sessionid" for d, n in names)
+        has_fb = any("facebook.com" in d for d in domains)
+        logging.info(f"🍪 عدد الكوكيز: {len(list(jar))} | instagram: {has_ig} | sessionid: {has_ig_session} | facebook: {has_fb}")
+        if has_ig and not has_ig_session:
+            logging.warning("⚠️ كوكيز إنستغرام لا تحتوي sessionid (الحساب غير مسجل دخول) وستفشل الروابط.")
+        if not has_ig:
+            logging.warning("⚠️ لا توجد كوكيز إنستغرام في الملف.")
+    except Exception as e:
+        logging.error(f"⚠️ ملف الكوكيز تالف وسيتم تجاهله: {e}")
         try:
             os.remove(COOKIES_FILE)
         except Exception:
             pass
+
+prepare_cookies()
 # ---------------------------------------------------------------------
 
 # بروكسي اختياري (مثال: http://user:pass@host:port) يوضع في متغير PROXY_URL
@@ -121,7 +161,7 @@ TEXTS = {
         "choose_format": "👇 <b>اختر الصيغة والجودة المطلوبة:</b>",
         "timeout": "⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.",
         "analyze_error": "❌ تعذر تحليل الرابط:\n<code>{error}</code>",
-        "err_login": "🔒 هذا المحتوى يتطلب تسجيل الدخول أو تم حظر الطلب مؤقتاً من المنصة. حاول لاحقاً أو جرّب رابطاً آخر.",
+        "err_login": "🔒 المنصة رفضت الطلب مؤقتاً (تتطلب تسجيل دخول). حاول مجدداً بعد قليل، وإن تكرر الأمر فسيقوم المشرف بتحديث الجلسة.",
         "err_private": "🔒 هذا المحتوى خاص ولا يمكن تحميله.",
         "err_no_video": "🖼 لا يوجد فيديو في هذا الرابط (قد يكون منشور صور فقط) أو أن الرابط غير مدعوم.",
         "err_unavailable": "🚫 هذا المحتوى غير متاح أو تم حذفه.",
@@ -168,7 +208,7 @@ TEXTS = {
         "choose_format": "👇 <b>Select the desired format and quality:</b>",
         "timeout": "⏱ Checking took too long. Please try again later.",
         "analyze_error": "❌ Failed to analyze link:\n<code>{error}</code>",
-        "err_login": "🔒 This content requires login or the request was temporarily blocked by the platform. Try again later or use another link.",
+        "err_login": "🔒 The platform temporarily rejected the request (login required). Try again shortly; if it persists, the admin will refresh the session.",
         "err_private": "🔒 This content is private and cannot be downloaded.",
         "err_no_video": "🖼 No video found in this link (it may be an image-only post) or the link is unsupported.",
         "err_unavailable": "🚫 This content is unavailable or has been removed.",
@@ -212,6 +252,10 @@ def is_youtube(url: str) -> bool:
     host = get_host(url)
     return any(host == d or host.endswith("." + d) for d in YOUTUBE_DOMAINS)
 
+def is_instagram(url: str) -> bool:
+    host = get_host(url)
+    return host == "instagram.com" or host.endswith(".instagram.com")
+
 def needs_resolve(url: str) -> bool:
     host = get_host(url)
     path = urlparse(url).path or ""
@@ -233,7 +277,7 @@ def resolve_url(url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
         with urllib.request.urlopen(req, timeout=12) as r:
             final = r.geturl()
-        if "/login" in final or "login.php" in final:
+        if "/login" in final or "login.php" in final or "accounts/login" in final:
             return url
         return final
     except Exception as e:
@@ -263,7 +307,7 @@ def friendly_error(lang, e):
         return t["err_no_video"]
     if "private" in low:
         return t["err_private"]
-    if any(k in low for k in ("login", "log in", "cookies", "rate-limit", "rate limit", "empty media response", "sign in", "checkpoint")):
+    if any(k in low for k in ("login", "log in", "cookies", "rate-limit", "rate limit", "empty media response", "sign in", "checkpoint", "authentication")):
         return t["err_login"]
     if any(k in low for k in ("not available", "unavailable", "removed", "404", "does not exist", "deleted")):
         return t["err_unavailable"]
@@ -407,7 +451,7 @@ def build_reselect_keyboard(lang):
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "heic"}
 
-def get_base_opts(url):
+def get_base_opts(url, use_cookies=True):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -418,14 +462,19 @@ def get_base_opts(url):
         "geo_bypass": True,
         "noplaylist": True,
         "playlist_items": "1",
+        "http_headers": {"User-Agent": BROWSER_UA},
     }
-    if os.path.exists(COOKIES_FILE):
+    if use_cookies and os.path.exists(COOKIES_FILE):
         ydl_opts["cookiefile"] = COOKIES_FILE
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
     if PROXY_URL:
         ydl_opts["proxy"] = PROXY_URL
     return ydl_opts
+
+def cookie_attempts():
+    """المحاولة الأولى بالكوكيز، والثانية بدونها (الكوكيز المنتهية قد تسبب رفضاً)."""
+    return [True, False] if os.path.exists(COOKIES_FILE) else [False]
 
 def pick_entry(info):
     """في المنشورات المتعددة (تغريدات/كاروسيل) نأخذ أول عنصر."""
@@ -448,29 +497,35 @@ def build_video_format(height=None):
     )
 
 def extract_info_only(url):
-    ydl_opts = get_base_opts(url)
-    ydl_opts["skip_download"] = True
-    ydl_opts["ignore_no_formats_error"] = True
-    ydl_opts["format"] = "all"
+    last_err = None
+    for use_cookies in cookie_attempts():
+        ydl_opts = get_base_opts(url, use_cookies)
+        ydl_opts["skip_download"] = True
+        ydl_opts["ignore_no_formats_error"] = True
+        ydl_opts["format"] = "all"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+            if not info:
+                raise Exception("No video formats found")
 
-    if not info:
-        raise Exception("No video formats found")
+            entry = pick_entry(info)
+            if entry is not info:
+                for k in ("uploader", "uploader_url", "channel", "channel_url"):
+                    if not entry.get(k):
+                        entry[k] = info.get(k)
 
-    entry = pick_entry(info)
-    if entry is not info:
-        for k in ("uploader", "uploader_url", "channel", "channel_url"):
-            if not entry.get(k):
-                entry[k] = info.get(k)
+            has_formats = bool(entry.get("formats"))
+            has_direct = bool(entry.get("url")) and str(entry.get("ext", "")).lower() not in IMAGE_EXTS
+            if not has_formats and not has_direct:
+                raise Exception("No video formats found")
 
-    has_formats = bool(entry.get("formats"))
-    has_direct = bool(entry.get("url")) and str(entry.get("ext", "")).lower() not in IMAGE_EXTS
-    if not has_formats and not has_direct:
-        raise Exception("No video formats found")
-
-    return entry
+            return entry
+        except Exception as e:
+            last_err = e
+            logging.warning(f"فشل الفحص (cookies={use_cookies}): {clean_err(str(e))[:200]}")
+    raise last_err
 
 def resolve_downloaded_file(ydl, info, mode):
     entry = pick_entry(info)
@@ -515,26 +570,38 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             if total:
                 state["percent"] = downloaded / total * 100
 
-    ydl_opts = get_base_opts(url)
-    ydl_opts["outtmpl"] = dest_template
-    ydl_opts["progress_hooks"] = [hook]
+    last_err = None
+    for use_cookies in cookie_attempts():
+        if cancel_event.is_set():
+            raise Exception("CANCELLED_BY_USER")
 
-    if mode == "mp3":
-        ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
-    else:
-        ydl_opts["format"] = build_video_format(height)
-        ydl_opts["merge_output_format"] = "mp4"
+        ydl_opts = get_base_opts(url, use_cookies)
+        ydl_opts["outtmpl"] = dest_template
+        ydl_opts["progress_hooks"] = [hook]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if not info:
-            raise Exception("No video formats found")
-        return resolve_downloaded_file(ydl, info, mode)
+        if mode == "mp3":
+            ydl_opts["format"] = "bestaudio/best"
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        else:
+            ydl_opts["format"] = build_video_format(height)
+            ydl_opts["merge_output_format"] = "mp4"
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    raise Exception("No video formats found")
+                return resolve_downloaded_file(ydl, info, mode)
+        except Exception as e:
+            if "CANCELLED_BY_USER" in str(e):
+                raise
+            last_err = e
+            logging.warning(f"فشل التحميل (cookies={use_cookies}): {clean_err(str(e))[:200]}")
+    raise last_err
 
 def cleanup_partial_files(token):
     """حذف أي ملفات مؤقتة/متبقية تخص رسالة معينة."""
@@ -749,7 +816,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except asyncio.TimeoutError:
         await checking_msg.edit_text(t["timeout"])
     except Exception as e:
-        logging.warning(f"فشل تحليل الرابط: {clean_err(str(e))[:200]}")
+        logging.warning(f"فشل تحليل الرابط: {clean_err(str(e))[:300]}")
         friendly = friendly_error(lang, e)
         msg = friendly or t["analyze_error"].format(error=html.escape(clean_err(str(e))[:150]))
         try:
@@ -872,7 +939,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "CANCELLED_BY_USER" in str(e):
             pass
         else:
-            logging.warning(f"فشل التحميل: {clean_err(str(e))[:200]}")
+            logging.warning(f"فشل التحميل: {clean_err(str(e))[:300]}")
             friendly = friendly_error(lang, e)
             msg = friendly or t["download_error"].format(error=html.escape(clean_err(str(e))[:150]))
             try:
