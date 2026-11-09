@@ -1,11 +1,13 @@
 import os
 import re
+import json
 import html
 import time
 import shutil
 import logging
 import asyncio
 import threading
+import subprocess
 import urllib.request
 from urllib.parse import urlparse
 from http.cookiejar import MozillaCookieJar
@@ -40,15 +42,11 @@ if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
 # ---------- تجهيز ملف الكوكيز (يُطبق على كل المنصات) ----------
-# المصادر بالترتيب: SITE_COOKIES ثم YT_COOKIES (للتوافق) ثم Secret File ثم ملف محلي
 COOKIES_FILE = "/tmp/site_cookies.txt"
 _secret_paths = ["/etc/secrets/cookies.txt", "cookies.txt"]
 
 def normalize_cookies(data: str) -> str:
-    """
-    إصلاح تنسيق الكوكيز: متغيرات البيئة غالباً تحوّل الـ Tab إلى مسافات،
-    وصيغة Netscape تتطلب 7 أعمدة مفصولة بـ Tab.
-    """
+    """إصلاح تنسيق الكوكيز: صيغة Netscape تتطلب 7 أعمدة مفصولة بـ Tab."""
     out = ["# Netscape HTTP Cookie File"]
     for line in data.replace("\r", "").splitlines():
         s = line.strip()
@@ -82,7 +80,7 @@ def prepare_cookies():
                 except Exception as e:
                     logging.error(f"تعذر قراءة {p}: {e}")
     if not raw:
-        logging.info("ℹ️ لا يوجد ملف كوكيز (إنستغرام وفيسبوك يحتاجانه غالباً).")
+        logging.info("ℹ️ لا يوجد ملف كوكيز.")
         return
 
     try:
@@ -93,7 +91,6 @@ def prepare_cookies():
         logging.error(f"فشل تجهيز ملف الكوكيز: {e}")
         return
 
-    # التحقق من الصلاحية وفحص الكوكيز المهمة
     try:
         jar = MozillaCookieJar(COOKIES_FILE)
         jar.load(ignore_discard=True, ignore_expires=True)
@@ -104,7 +101,7 @@ def prepare_cookies():
         has_fb = any("facebook.com" in d for d in domains)
         logging.info(f"🍪 عدد الكوكيز: {len(list(jar))} | instagram: {has_ig} | sessionid: {has_ig_session} | facebook: {has_fb}")
         if has_ig and not has_ig_session:
-            logging.warning("⚠️ كوكيز إنستغرام لا تحتوي sessionid (الحساب غير مسجل دخول) وستفشل الروابط.")
+            logging.warning("⚠️ كوكيز إنستغرام لا تحتوي sessionid (الحساب غير مسجل دخول).")
         if not has_ig:
             logging.warning("⚠️ لا توجد كوكيز إنستغرام في الملف.")
     except Exception as e:
@@ -117,7 +114,6 @@ def prepare_cookies():
 prepare_cookies()
 # ---------------------------------------------------------------------
 
-# بروكسي اختياري (مثال: http://user:pass@host:port) يوضع في متغير PROXY_URL
 PROXY_URL = os.environ.get("PROXY_URL")
 
 WELCOME_IMAGE_URL = "https://files.catbox.moe/heevbw.jpg"
@@ -313,6 +309,106 @@ def friendly_error(lang, e):
         return t["err_unavailable"]
     return None
 
+# ---------------- مسار بديل لإنستغرام (بدون تسجيل دخول) ----------------
+
+def _parse_ig(url):
+    m = re.search(r'instagram\.com/(?:[A-Za-z0-9_.]+/)?(reels?|p|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None, None
+    kind = "reel" if m.group(1).startswith("reel") else m.group(1)
+    return kind, m.group(2)
+
+def _http_get_text(url, timeout=15):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="ignore")
+
+def _decode_json_string(s):
+    s = s.replace("\\\\/", "/").replace("\\/", "/")
+    try:
+        return json.loads('"' + s.replace('"', '\\"') + '"')
+    except Exception:
+        return s.replace("\\u0026", "&").replace("&amp;", "&")
+
+def instagram_fallback(url):
+    """محاولة جلب رابط الفيديو المباشر عبر صفحة التضمين أو خدمة وسيطة."""
+    kind, code = _parse_ig(url)
+    if not code:
+        return None
+
+    result = {"video_url": None, "uploader": None, "title": None, "code": code}
+
+    # 1) صفحة التضمين (embed)
+    try:
+        body = _http_get_text(f"https://www.instagram.com/{kind}/{code}/embed/captioned/")
+        body = html.unescape(body)
+        for pattern in (r'\\"video_url\\":\\"(.*?)\\"', r'"video_url":"(.*?)"'):
+            m = re.search(pattern, body)
+            if m:
+                result["video_url"] = _decode_json_string(m.group(1))
+                break
+        mu = re.search(r'\\?"username\\?":\\?"([A-Za-z0-9_.]+)', body)
+        if mu:
+            result["uploader"] = mu.group(1)
+        mc = re.search(r'class="Caption"[^>]*>.*?<div class="CaptionContent">(.*?)</div>', body, re.S)
+        if mc:
+            result["title"] = re.sub(r'<[^>]+>', ' ', mc.group(1)).strip()[:200]
+    except Exception as e:
+        logging.warning(f"فشل مسار embed: {str(e)[:100]}")
+
+    # 2) خدمة وسيطة
+    if not result["video_url"]:
+        try:
+            req = urllib.request.Request(
+                f"https://d.ddinstagram.com/{kind}/{code}",
+                headers={"User-Agent": BROWSER_UA}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                if r.headers.get("Content-Type", "").startswith("video"):
+                    result["video_url"] = r.geturl()
+        except Exception as e:
+            logging.warning(f"فشل المسار الوسيط: {str(e)[:100]}")
+
+    return result if result["video_url"] else None
+
+def download_direct(video_url, dest_template, state, cancel_event, mode, meta=None):
+    """تحميل ملف مباشر مع تحديث التقدم، وتحويله لـ mp3 عند الحاجة."""
+    code = (meta or {}).get("code", "ig")
+    name = dest_template.replace("%(id)s", code).replace("%(ext)s", "mp4")
+    req = urllib.request.Request(video_url, headers={"User-Agent": BROWSER_UA})
+    with urllib.request.urlopen(req, timeout=30) as r, open(name, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            if cancel_event.is_set():
+                raise Exception("CANCELLED_BY_USER")
+            chunk = r.read(256 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            state["downloaded"] = done
+            if total:
+                state["percent"] = done / total * 100
+
+    entry = {"id": code}
+    if mode == "mp3":
+        out = name[:-4] + ".mp3"
+        subprocess.run(
+            [FFMPEG_PATH or "ffmpeg", "-y", "-i", name, "-vn", "-acodec", "libmp3lame", "-b:a", "192k", out],
+            check=True, capture_output=True
+        )
+        try:
+            os.remove(name)
+        except Exception:
+            pass
+        return out, entry
+    return name, entry
+
 # ---------------- أدوات التنسيق والواجهة ----------------
 
 def format_file_size(filepath):
@@ -473,7 +569,7 @@ def get_base_opts(url, use_cookies=True):
     return ydl_opts
 
 def cookie_attempts():
-    """المحاولة الأولى بالكوكيز، والثانية بدونها (الكوكيز المنتهية قد تسبب رفضاً)."""
+    """المحاولة الأولى بالكوكيز، والثانية بدونها."""
     return [True, False] if os.path.exists(COOKIES_FILE) else [False]
 
 def pick_entry(info):
@@ -525,6 +621,20 @@ def extract_info_only(url):
         except Exception as e:
             last_err = e
             logging.warning(f"فشل الفحص (cookies={use_cookies}): {clean_err(str(e))[:200]}")
+
+    # مسار بديل لإنستغرام
+    if is_instagram(url):
+        fb = instagram_fallback(url)
+        if fb:
+            logging.info("✅ نجح المسار البديل لإنستغرام (الفحص).")
+            uname = fb.get("uploader")
+            return {
+                "id": fb["code"],
+                "title": fb.get("title"),
+                "uploader": uname,
+                "uploader_url": f"https://www.instagram.com/{uname}/" if uname else None,
+                "formats": [{"height": 720, "vcodec": "avc1", "ext": "mp4"}],
+            }
     raise last_err
 
 def resolve_downloaded_file(ydl, info, mode):
@@ -601,6 +711,13 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
                 raise
             last_err = e
             logging.warning(f"فشل التحميل (cookies={use_cookies}): {clean_err(str(e))[:200]}")
+
+    # مسار بديل لإنستغرام
+    if is_instagram(url):
+        fb = instagram_fallback(url)
+        if fb:
+            logging.info("✅ نجح المسار البديل لإنستغرام (التحميل).")
+            return download_direct(fb["video_url"], dest_template, state, cancel_event, mode, fb)
     raise last_err
 
 def cleanup_partial_files(token):
@@ -780,7 +897,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw_url = match.group(0).rstrip(".,;:!?)»”\"'")
 
-    # حظر يوتيوب قبل أي معالجة
     if is_youtube(raw_url):
         await update.message.reply_text(t["youtube_unsupported"])
         return
@@ -789,11 +905,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         loop = asyncio.get_running_loop()
 
-        # فك الروابط المختصرة وروابط المشاركة ثم التنظيف
         url = await loop.run_in_executor(None, resolve_url, raw_url)
         url = clean_url(url)
 
-        # قد يحوّل الرابط المختصر إلى يوتيوب
         if is_youtube(url):
             await checking_msg.edit_text(t["youtube_unsupported"])
             return
