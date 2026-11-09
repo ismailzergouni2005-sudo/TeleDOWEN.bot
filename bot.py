@@ -1,25 +1,19 @@
 import os
 import re
+import html
 import time
 import shutil
 import logging
 import asyncio
 import threading
+import urllib.request
+from urllib.parse import urlparse
+from http.cookiejar import MozillaCookieJar
 
 # --- تفعيل مكتبة static-ffmpeg تلقائياً ---
 import static_ffmpeg
 static_ffmpeg.add_paths()
 # ----------------------------------------
-
-# ---------- إضافة مسار deno (المثبّت عبر pip) إلى PATH ----------
-try:
-    import deno as _deno_pkg
-    _deno_dir = os.path.dirname(_deno_pkg.find_deno_bin()) if hasattr(_deno_pkg, "find_deno_bin") else None
-    if _deno_dir:
-        os.environ["PATH"] = _deno_dir + os.pathsep + os.environ.get("PATH", "")
-except Exception:
-    pass
-# ----------------------------------------------------------------------
 
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -27,15 +21,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.request import HTTPXRequest
 import yt_dlp
 
-app = Flask('')
+web_app = Flask('')
 
-@app.route('/')
+@web_app.route('/')
 def home():
     return "Bot is alive!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    web_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
 
@@ -45,17 +39,20 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("❌ لم يتم تعيين متغير البيئة BOT_TOKEN.")
 
-# ---------- [تصحيح] تجهيز ملف الكوكيز في مسار قابل للكتابة ----------
-# المصادر بالترتيب: متغير YT_COOKIES ثم Secret File في Render ثم ملف محلي
-COOKIES_FILE = "/tmp/yt_cookies.txt"
+# ---------- تجهيز ملف الكوكيز (يُطبق على كل المنصات) ----------
+# المصادر بالترتيب: SITE_COOKIES ثم YT_COOKIES (للتوافق) ثم Secret File ثم ملف محلي
+COOKIES_FILE = "/tmp/site_cookies.txt"
 _secret_paths = ["/etc/secrets/cookies.txt", "cookies.txt"]
-_cookies_env = os.environ.get("YT_COOKIES")
+_cookies_env = os.environ.get("SITE_COOKIES") or os.environ.get("YT_COOKIES")
 
 try:
     if _cookies_env and _cookies_env.strip():
+        _data = _cookies_env.strip()
+        if not _data.startswith("# Netscape") and not _data.startswith("# HTTP Cookie"):
+            _data = "# Netscape HTTP Cookie File\n" + _data
         with open(COOKIES_FILE, "w", encoding="utf-8") as _cf:
-            _cf.write(_cookies_env.strip() + "\n")
-        logging.info("✅ تم إنشاء ملف الكوكيز من متغير البيئة YT_COOKIES.")
+            _cf.write(_data + "\n")
+        logging.info("✅ تم إنشاء ملف الكوكيز من متغير البيئة.")
     else:
         for _p in _secret_paths:
             if os.path.exists(_p):
@@ -63,15 +60,21 @@ try:
                 logging.info(f"✅ تم نسخ ملف الكوكيز من: {_p}")
                 break
         else:
-            logging.warning("⚠️ لم يتم العثور على أي ملف كوكيز.")
+            logging.info("ℹ️ لا يوجد ملف كوكيز (اختياري).")
 except Exception as _e:
     logging.error(f"فشل تجهيز ملف الكوكيز: {_e}")
 
+# التحقق من صلاحية الملف حتى لا يعطل كل التحميلات إن كان تالفاً
 if os.path.exists(COOKIES_FILE):
-    with open(COOKIES_FILE, "r", encoding="utf-8", errors="ignore") as _cf:
-        _content = _cf.read()
-    _count = len([l for l in _content.splitlines() if l.strip() and not l.startswith("#")])
-    logging.info(f"🍪 عدد أسطر الكوكيز: {_count} | يحتوي youtube: {'youtube.com' in _content}")
+    try:
+        MozillaCookieJar(COOKIES_FILE).load(ignore_discard=True, ignore_expires=True)
+        logging.info("🍪 ملف الكوكيز صالح.")
+    except Exception as _e:
+        logging.error(f"⚠️ ملف الكوكيز تالف وسيتم تجاهله: {_e}")
+        try:
+            os.remove(COOKIES_FILE)
+        except Exception:
+            pass
 # ---------------------------------------------------------------------
 
 # بروكسي اختياري (مثال: http://user:pass@host:port) يوضع في متغير PROXY_URL
@@ -91,11 +94,10 @@ if not FFMPEG_PATH:
     except Exception:
         FFMPEG_PATH = None
 
-logging.info(f"deno: {shutil.which('deno')} | node: {shutil.which('node')}")
-
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-# ---------------- النصوص متعددة اللغات ----------------
+# ---------------- النصوص متعددة اللغات (HTML) ----------------
 
 TEXTS = {
     "ar": {
@@ -105,7 +107,6 @@ TEXTS = {
             "<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
             "أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
             "🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
-            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -115,10 +116,15 @@ TEXTS = {
             "⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
         ),
         "invalid_url": "❌ يرجى إرسال رابط صحيح.",
+        "youtube_unsupported": "⚠️ منصة يوتيوب غير مدعومة حالياً.",
         "checking": "🔍 جاري فحص الرابط والجودات...",
-        "choose_format": "👇 **اختر الصيغة والجودة المطلوبة:**",
+        "choose_format": "👇 <b>اختر الصيغة والجودة المطلوبة:</b>",
         "timeout": "⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.",
-        "analyze_error": "❌ تعذر تحليل الرابط:\n`{error}`",
+        "analyze_error": "❌ تعذر تحليل الرابط:\n<code>{error}</code>",
+        "err_login": "🔒 هذا المحتوى يتطلب تسجيل الدخول أو تم حظر الطلب مؤقتاً من المنصة. حاول لاحقاً أو جرّب رابطاً آخر.",
+        "err_private": "🔒 هذا المحتوى خاص ولا يمكن تحميله.",
+        "err_no_video": "🖼 لا يوجد فيديو في هذا الرابط (قد يكون منشور صور فقط) أو أن الرابط غير مدعوم.",
+        "err_unavailable": "🚫 هذا المحتوى غير متاح أو تم حذفه.",
         "account": "👤 الحساب",
         "unknown": "غير معروف",
         "description": "📝 الوصف",
@@ -136,10 +142,10 @@ TEXTS = {
         "downloading": "⏳ جاري بدء التحميل...",
         "processing": "جاري التحميل والمعالجة...",
         "downloaded_mb": "تم تحميل {mb:.1f} MB...",
-        "too_large": "❌ **حجم الملف كبير جداً ({size})**.\nحد التحميل المسموح للبوتات هو 50MB.",
+        "too_large": "❌ <b>حجم الملف كبير جداً ({size})</b>.\nحد التحميل المسموح للبوتات هو 50MB.",
         "success": "✅ تم التحميل بنجاح!",
         "size": "💾 الحجم",
-        "download_error": "❌ **حدث خطأ أثناء التحميل:**\n`{error}`"
+        "download_error": "❌ <b>حدث خطأ أثناء التحميل:</b>\n<code>{error}</code>"
     },
     "en": {
         "welcome": (
@@ -148,7 +154,6 @@ TEXTS = {
             "<blockquote><b> ⚡ Welcome to Fast Downloader Bot! ⚡ </b></blockquote>\n\n"
             "I'm here to help you download videos and audio clips in the highest possible quality.\n\n"
             "🌐 <b><u>Currently Supported Platforms:</u></b>\n\n"
-            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -158,10 +163,15 @@ TEXTS = {
             "⚡ <i>Just send any video link now!</i>"
         ),
         "invalid_url": "❌ Please send a valid link.",
+        "youtube_unsupported": "⚠️ YouTube is not supported at the moment.",
         "checking": "🔍 Checking link and qualities...",
-        "choose_format": "👇 **Select the desired format and quality:**",
+        "choose_format": "👇 <b>Select the desired format and quality:</b>",
         "timeout": "⏱ Checking took too long. Please try again later.",
-        "analyze_error": "❌ Failed to analyze link:\n`{error}`",
+        "analyze_error": "❌ Failed to analyze link:\n<code>{error}</code>",
+        "err_login": "🔒 This content requires login or the request was temporarily blocked by the platform. Try again later or use another link.",
+        "err_private": "🔒 This content is private and cannot be downloaded.",
+        "err_no_video": "🖼 No video found in this link (it may be an image-only post) or the link is unsupported.",
+        "err_unavailable": "🚫 This content is unavailable or has been removed.",
         "account": "👤 Account",
         "unknown": "Unknown",
         "description": "📝 Description",
@@ -179,22 +189,85 @@ TEXTS = {
         "downloading": "⏳ Starting download...",
         "processing": "Downloading & processing...",
         "downloaded_mb": "Downloaded {mb:.1f} MB...",
-        "too_large": "❌ **File size too large ({size})**.\nTelegram bot limit is 50MB.",
+        "too_large": "❌ <b>File size too large ({size})</b>.\nTelegram bot limit is 50MB.",
         "success": "✅ Downloaded successfully!",
         "size": "💾 Size",
-        "download_error": "❌ **An error occurred during download:**\n`{error}`"
+        "download_error": "❌ <b>An error occurred during download:</b>\n<code>{error}</code>"
     }
 }
 
-def clean_url(url: str) -> str:
-    if "instagram.com" in url:
-        match = re.search(r'(https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[A-Za-z0-9_-]+)', url)
-        if match:
-            return match.group(1) + "/"
-    return url
+# ---------------- أدوات الروابط ----------------
+
+YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com")
+SHORT_HOSTS = {"pin.it", "vm.tiktok.com", "vt.tiktok.com", "fb.watch"}
+
+def get_host(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
 
 def is_youtube(url: str) -> bool:
-    return any(d in url for d in ("youtube.com", "youtu.be"))
+    host = get_host(url)
+    return any(host == d or host.endswith("." + d) for d in YOUTUBE_DOMAINS)
+
+def needs_resolve(url: str) -> bool:
+    host = get_host(url)
+    path = urlparse(url).path or ""
+    if host in SHORT_HOSTS:
+        return True
+    if host.endswith("facebook.com") and path.startswith("/share/"):
+        return True
+    if host.endswith("instagram.com") and path.startswith("/share/"):
+        return True
+    if host.endswith("tiktok.com") and path.startswith("/t/"):
+        return True
+    return False
+
+def resolve_url(url: str) -> str:
+    """فك الروابط المختصرة وروابط المشاركة للحصول على الرابط الحقيقي."""
+    if not needs_resolve(url):
+        return url
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            final = r.geturl()
+        if "/login" in final or "login.php" in final:
+            return url
+        return final
+    except Exception as e:
+        logging.warning(f"تعذر فك الرابط المختصر: {str(e)[:100]}")
+        return url
+
+def clean_url(url: str) -> str:
+    if "instagram.com" in url:
+        match = re.search(
+            r'https?://(?:www\.)?instagram\.com/(?:[A-Za-z0-9_.]+/)?(reels?|p|tv)/([A-Za-z0-9_-]+)',
+            url
+        )
+        if match:
+            kind = "reel" if match.group(1).startswith("reel") else match.group(1)
+            return f"https://www.instagram.com/{kind}/{match.group(2)}/"
+    return url
+
+def clean_err(msg: str) -> str:
+    msg = re.sub(r'\x1b\[[0-9;]*m', '', str(msg))
+    msg = re.sub(r'^\s*ERROR:\s*', '', msg.strip())
+    return msg
+
+def friendly_error(lang, e):
+    t = TEXTS[lang]
+    low = clean_err(str(e)).lower()
+    if "no video" in low or "no video formats" in low or "unsupported url" in low:
+        return t["err_no_video"]
+    if "private" in low:
+        return t["err_private"]
+    if any(k in low for k in ("login", "log in", "cookies", "rate-limit", "rate limit", "empty media response", "sign in", "checkpoint")):
+        return t["err_login"]
+    if any(k in low for k in ("not available", "unavailable", "removed", "404", "does not exist", "deleted")):
+        return t["err_unavailable"]
+    return None
 
 # ---------------- أدوات التنسيق والواجهة ----------------
 
@@ -234,11 +307,12 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
     t = TEXTS[lang]
     lines = []
 
-    if uploader_url:
-        uploader_link = f'<a href="{uploader_url}">{uploader or t["unknown"]}</a>'
-        lines.append(f"{t['account']}: {uploader_link}")
-    elif uploader:
-        lines.append(f"{t['account']}: <b>{uploader}</b>")
+    safe_uploader = html.escape(str(uploader)) if uploader else None
+    if uploader_url and str(uploader_url).startswith("http"):
+        href = html.escape(str(uploader_url), quote=True)
+        lines.append(f"{t['account']}: <a href=\"{href}\">{safe_uploader or t['unknown']}</a>")
+    elif safe_uploader:
+        lines.append(f"{t['account']}: <b>{safe_uploader}</b>")
     else:
         lines.append(f"{t['account']}: {t['unknown']}")
 
@@ -246,7 +320,7 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
     if text_content:
         clean_text = text_content.strip().split('\n')[0]
         short_text = clean_text if len(clean_text) <= 80 else clean_text[:77] + "..."
-        lines.append(f"{t['description']}: {short_text}")
+        lines.append(f"{t['description']}: {html.escape(short_text)}")
 
     formatted_duration = format_duration(duration)
     if formatted_duration:
@@ -257,7 +331,7 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
         lines.append(f"{t['views']}: {formatted_views}")
 
     if quality:
-        lines.append(f"{t['quality']}: {quality}")
+        lines.append(f"{t['quality']}: {html.escape(str(quality))}")
 
     return "\n".join(lines)
 
@@ -280,6 +354,11 @@ def get_available_options(info):
         if not h or vcodec == "none":
             continue
 
+        try:
+            h = int(h)
+        except (TypeError, ValueError):
+            continue
+
         prev = candidates.get(h)
         if prev is None or (ext == "mp4" and prev.get("ext") != "mp4"):
             candidates[h] = {"ext": ext}
@@ -287,7 +366,7 @@ def get_available_options(info):
     if not candidates:
         height_from_info = info.get("height")
         if height_from_info:
-            candidates[height_from_info] = {"ext": "mp4"}
+            candidates[int(height_from_info)] = {"ext": "mp4"}
         else:
             return {1080: {"ext": "mp4"}, 720: {"ext": "mp4"}, 480: {"ext": "mp4"}}
 
@@ -300,16 +379,14 @@ def build_quality_keyboard(lang, video_opts):
 
     buttons = []
     for h in heights:
-        ext = video_opts[h]["ext"].upper()
+        ext = str(video_opts[h]["ext"]).upper()
         label = f"🎬 {h}p ({ext})"
         buttons.append(InlineKeyboardButton(label, callback_data=f"q_{h}"))
 
     for i in range(0, len(buttons), 2):
         rows.append(buttons[i:i + 2])
 
-    rows.append([
-        InlineKeyboardButton(t["audio_only"], callback_data="a_mp3")
-    ])
+    rows.append([InlineKeyboardButton(t["audio_only"], callback_data="a_mp3")])
     rows.append([InlineKeyboardButton(t["instant"], callback_data="v_instant")])
     rows.append([InlineKeyboardButton(t["cancel"], callback_data="action_cancel")])
     return InlineKeyboardMarkup(rows)
@@ -326,72 +403,106 @@ def build_reselect_keyboard(lang):
         [InlineKeyboardButton(t["reselect"], callback_data="reselect_format")]
     ])
 
-# ---------------- خيارات الهيدرز وتخطي الحظر ----------------
+# ---------------- خيارات yt-dlp ----------------
 
-INSTAGRAM_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-}
+IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "heic"}
 
-# [تصحيح] قائمة عملاء يوتيوب للتجربة بالتتابع عند الفشل
-YT_CLIENT_SETS = [
-    ["tv", "web_safari"],
-    ["mweb"],
-    ["ios"],
-    ["android_vr"],
-    ["web"],
-]
-
-def get_base_opts(url, yt_clients=None):
+def get_base_opts(url):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 15,
+        "no_color": True,
+        "socket_timeout": 20,
         "retries": 5,
-        "http_headers": INSTAGRAM_HEADERS if "instagram.com" in url else {},
+        "extractor_retries": 3,
+        "geo_bypass": True,
+        "noplaylist": True,
+        "playlist_items": "1",
     }
-
-    # [تصحيح] استخدام الكوكيز فقط لمواقع يوتيوب (تجنب إرسالها لباقي المواقع)
-    has_cookies = os.path.exists(COOKIES_FILE) and is_youtube(url)
-    if has_cookies:
+    if os.path.exists(COOKIES_FILE):
         ydl_opts["cookiefile"] = COOKIES_FILE
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
     if PROXY_URL:
         ydl_opts["proxy"] = PROXY_URL
-
-    if is_youtube(url):
-        extractor_args = {}
-        if yt_clients:
-            extractor_args["player_client"] = yt_clients
-        ydl_opts["extractor_args"] = {"youtube": extractor_args} if extractor_args else {}
-
-        js_runtimes = {}
-        if shutil.which("deno"):
-            js_runtimes["deno"] = {}
-        if shutil.which("node"):
-            js_runtimes["node"] = {}
-        if js_runtimes:
-            ydl_opts["js_runtimes"] = js_runtimes
-        ydl_opts["remote_components"] = ["ejs:github"]
-
     return ydl_opts
 
+def pick_entry(info):
+    """في المنشورات المتعددة (تغريدات/كاروسيل) نأخذ أول عنصر."""
+    entries = info.get("entries")
+    if entries:
+        for e in entries:
+            if e:
+                return e
+    return info
+
+def build_video_format(height=None):
+    h = f"[height<={height}]" if height else ""
+    return (
+        f"bv*{h}[vcodec~='^(h264|avc)']+ba[ext=m4a]"
+        f"/bv*{h}[ext=mp4]+ba[ext=m4a]"
+        f"/bv*{h}+ba"
+        f"/b{h}[ext=mp4]"
+        f"/b{h}"
+        f"/best"
+    )
+
 def extract_info_only(url):
-    last_err = None
-    client_sets = YT_CLIENT_SETS if is_youtube(url) else [None]
-    for clients in client_sets:
-        ydl_opts = get_base_opts(url, clients)
-        ydl_opts["skip_download"] = True
-        ydl_opts["ignore_no_formats_error"] = True
-        ydl_opts["format"] = "all"
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception as e:
-            last_err = e
-            logging.warning(f"فشل الفحص بالعملاء {clients}: {str(e)[:100]}")
-    raise last_err
+    ydl_opts = get_base_opts(url)
+    ydl_opts["skip_download"] = True
+    ydl_opts["ignore_no_formats_error"] = True
+    ydl_opts["format"] = "all"
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info:
+        raise Exception("No video formats found")
+
+    entry = pick_entry(info)
+    if entry is not info:
+        for k in ("uploader", "uploader_url", "channel", "channel_url"):
+            if not entry.get(k):
+                entry[k] = info.get(k)
+
+    has_formats = bool(entry.get("formats"))
+    has_direct = bool(entry.get("url")) and str(entry.get("ext", "")).lower() not in IMAGE_EXTS
+    if not has_formats and not has_direct:
+        raise Exception("No video formats found")
+
+    return entry
+
+def resolve_downloaded_file(ydl, info, mode):
+    entry = pick_entry(info)
+
+    paths = []
+    for src in (entry, info):
+        for rd in (src.get("requested_downloads") or []):
+            fp = rd.get("filepath")
+            if fp:
+                paths.append(fp)
+    for fp in paths:
+        if os.path.exists(fp):
+            return fp, entry
+
+    try:
+        filename = ydl.prepare_filename(entry)
+    except Exception:
+        filename = None
+
+    if filename:
+        base, _ = os.path.splitext(filename)
+        exts = [".mp3"] if mode == "mp3" else [".mp4", ".mkv", ".webm"]
+        for cand in [filename] + [base + e for e in exts]:
+            if os.path.exists(cand):
+                return cand, entry
+        directory = os.path.dirname(base) or "."
+        prefix = os.path.basename(base)
+        for fname in os.listdir(directory):
+            if fname.startswith(prefix) and not fname.endswith((".part", ".ytdl")):
+                return os.path.join(directory, fname), entry
+
+    raise FileNotFoundError("لم يتم العثور على الملف بعد التحميل")
 
 def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="video", height=None):
     def hook(d):
@@ -404,58 +515,38 @@ def yt_dlp_download_one_pass(url, dest_template, state, cancel_event, mode="vide
             if total:
                 state["percent"] = downloaded / total * 100
 
-    # [تصحيح] تجربة عدة عملاء ليوتيوب بالتتابع عند الفشل
-    client_sets = YT_CLIENT_SETS if is_youtube(url) else [None]
-    last_err = None
+    ydl_opts = get_base_opts(url)
+    ydl_opts["outtmpl"] = dest_template
+    ydl_opts["progress_hooks"] = [hook]
 
-    for clients in client_sets:
-        if cancel_event.is_set():
-            raise Exception("CANCELLED_BY_USER")
+    if mode == "mp3":
+        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }]
+    else:
+        ydl_opts["format"] = build_video_format(height)
+        ydl_opts["merge_output_format"] = "mp4"
 
-        ydl_opts = get_base_opts(url, clients)
-        ydl_opts["outtmpl"] = dest_template
-        ydl_opts["progress_hooks"] = [hook]
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if not info:
+            raise Exception("No video formats found")
+        return resolve_downloaded_file(ydl, info, mode)
 
-        if mode == "mp3":
-            ydl_opts["format"] = "bestaudio/best"
-            ydl_opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        elif height:
-            ydl_opts["format"] = f"bv*[height<={height}]+ba/b[height<={height}]/best"
-        else:
-            ydl_opts["format"] = "bv*+ba/b/best"
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-
-                if mode == "mp3":
-                    base, _ = os.path.splitext(filename)
-                    if os.path.exists(base + ".mp3"):
-                        filename = base + ".mp3"
-
-                final_file = filename
-                if not os.path.exists(final_file):
-                    base_no_ext, _ = os.path.splitext(filename)
-                    directory = os.path.dirname(base_no_ext) or "."
-                    base_name = os.path.basename(base_no_ext)
-                    for fname in os.listdir(directory):
-                        if fname.startswith(base_name):
-                            final_file = os.path.join(directory, fname)
-                            break
-
-                return final_file, info
-        except Exception as e:
-            if "CANCELLED_BY_USER" in str(e):
-                raise
-            last_err = e
-            logging.warning(f"فشل التحميل بالعملاء {clients}: {str(e)[:100]}")
-
-    raise last_err
+def cleanup_partial_files(token):
+    """حذف أي ملفات مؤقتة/متبقية تخص رسالة معينة."""
+    try:
+        for fname in os.listdir(DOWNLOAD_DIR):
+            if token in fname:
+                try:
+                    os.remove(os.path.join(DOWNLOAD_DIR, fname))
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 # ---------------- إدارة البث والتحديث ----------------
 
@@ -517,7 +608,7 @@ async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_
         except Exception:
             pass
 
-async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False):
+async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False, entry=None):
     t = TEXTS[lang]
     size_mb, file_size_str = format_file_size(filepath)
 
@@ -533,18 +624,31 @@ async def send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang
 
     size_line = f"\n{t['size']}: {file_size_str}" if file_size_str else ""
     caption = f"{meta_caption}{size_line}\n\n{t['success']}"
+    entry = entry or {}
+
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
 
     try:
         with open(filepath, "rb") as f:
             if is_audio:
                 await bot.send_audio(
                     chat_id=chat_id, audio=f, caption=caption,
-                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang), read_timeout=120
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang),
+                    duration=_int(entry.get("duration")),
+                    read_timeout=120, write_timeout=120
                 )
             else:
                 await bot.send_video(
                     chat_id=chat_id, video=f, caption=caption,
-                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang), supports_streaming=True, read_timeout=120
+                    parse_mode='HTML', reply_markup=build_reselect_keyboard(lang),
+                    supports_streaming=True,
+                    width=_int(entry.get("width")), height=_int(entry.get("height")),
+                    duration=_int(entry.get("duration")),
+                    read_timeout=120, write_timeout=120
                 )
     finally:
         if os.path.exists(filepath):
@@ -564,15 +668,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
     await update.message.reply_text(
-        "🌐 **الرجاء اختيار اللغة / Please select your language:**",
+        "🌐 <b>الرجاء اختيار اللغة / Please select your language:</b>",
         reply_markup=keyboard,
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
 
 async def send_welcome(query, context: ContextTypes.DEFAULT_TYPE, lang: str):
     t = TEXTS[lang]
     user = query.from_user
-    name = user.first_name or "User"
+    name = html.escape(user.first_name or "User")
     user_id = user.id
 
     blue_user_link = f'<a href="tg://user?id={user_id}">« {name} »</a>'
@@ -601,19 +705,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get("lang", "ar")
     t = TEXTS[lang]
 
-    text = update.message.text.strip()
+    text = (update.message.text or "").strip()
     match = re.search(r'https?://[^\s]+', text)
     if not match:
         await update.message.reply_text(t["invalid_url"])
         return
 
-    url = clean_url(match.group(0))
-    context.user_data['download_url'] = url
+    raw_url = match.group(0).rstrip(".,;:!?)»”\"'")
+
+    # حظر يوتيوب قبل أي معالجة
+    if is_youtube(raw_url):
+        await update.message.reply_text(t["youtube_unsupported"])
+        return
 
     checking_msg = await update.message.reply_text(t["checking"])
     try:
+        loop = asyncio.get_running_loop()
+
+        # فك الروابط المختصرة وروابط المشاركة ثم التنظيف
+        url = await loop.run_in_executor(None, resolve_url, raw_url)
+        url = clean_url(url)
+
+        # قد يحوّل الرابط المختصر إلى يوتيوب
+        if is_youtube(url):
+            await checking_msg.edit_text(t["youtube_unsupported"])
+            return
+
+        context.user_data['download_url'] = url
+
         info = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(None, extract_info_only, url),
+            loop.run_in_executor(None, extract_info_only, url),
             timeout=90
         )
         context.user_data['ytdlp_info'] = info
@@ -623,12 +744,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await checking_msg.edit_text(
             t["choose_format"],
             reply_markup=build_quality_keyboard(lang, video_opts),
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
     except asyncio.TimeoutError:
         await checking_msg.edit_text(t["timeout"])
     except Exception as e:
-        await checking_msg.edit_text(t["analyze_error"].format(error=str(e)[:100]), parse_mode='Markdown')
+        logging.warning(f"فشل تحليل الرابط: {clean_err(str(e))[:200]}")
+        friendly = friendly_error(lang, e)
+        msg = friendly or t["analyze_error"].format(error=html.escape(clean_err(str(e))[:150]))
+        try:
+            await checking_msg.edit_text(msg, parse_mode='HTML')
+        except Exception:
+            pass
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -652,15 +779,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_event = context.user_data.get("active_cancel_event")
         if cancel_event:
             cancel_event.set()
-        await query.edit_message_text(t["cancelled"])
+        try:
+            await query.edit_message_text(t["cancelled"])
+        except Exception:
+            pass
         return
 
     if query.data == "reselect_format":
-        video_opts = context.user_data.get('video_opts') or {}
+        video_opts = context.user_data.get('video_opts')
+        if not video_opts or not context.user_data.get('download_url'):
+            await query.message.reply_text(t["expired"])
+            return
         await query.message.reply_text(
             t["choose_format"],
             reply_markup=build_quality_keyboard(lang, video_opts),
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
         return
 
@@ -669,12 +802,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(t["expired"])
         return
 
+    if is_youtube(url):
+        await query.edit_message_text(t["youtube_unsupported"])
+        return
+
     info = context.user_data.get('ytdlp_info') or {}
 
     quality_str = None
     if query.data.startswith("q_"):
-        height = query.data.split("_")[1]
-        quality_str = f"{height}p"
+        quality_str = f"{query.data.split('_')[1]}p"
     elif query.data == "a_mp3":
         quality_str = t["audio_only"]
     elif query.data == "v_instant":
@@ -694,61 +830,73 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancel_event = asyncio.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
-    status_msg = await query.edit_message_text(f"{meta_caption}\n\n{t['downloading']}", parse_mode='HTML', reply_markup=build_cancel_keyboard(lang))
+    status_msg = await query.edit_message_text(
+        f"{meta_caption}\n\n{t['downloading']}",
+        parse_mode='HTML',
+        reply_markup=build_cancel_keyboard(lang)
+    )
 
     chat_id = query.message.chat_id
     bot = context.bot
+    token = f"_{status_msg.message_id}."
     dest_template = f"{DOWNLOAD_DIR}/%(id)s_{status_msg.message_id}.%(ext)s"
     state = {"percent": None, "downloaded": 0}
 
     try:
         if query.data.startswith("q_"):
             height = int(query.data.split("_")[1])
-            filepath, _ = await run_with_progress(
+            filepath, entry = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", height),
                 status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False, entry=entry)
 
         elif query.data.startswith("a_"):
             mode = query.data.split("_")[1]
-            filepath, _ = await run_with_progress(
+            filepath, entry = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, mode, None),
                 status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=True)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=True, entry=entry)
 
         elif query.data == "v_instant":
-            filepath, _ = await run_with_progress(
+            filepath, entry = await run_with_progress(
                 yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", None),
                 status_msg, meta_caption, state, cancel_event, lang
             )
-            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False)
+            await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False, entry=entry)
 
     except (asyncio.CancelledError, RuntimeError):
         pass
     except Exception as e:
-        try:
-            await status_msg.edit_text(t["download_error"].format(error=str(e)[:120]), parse_mode='Markdown')
-        except Exception:
+        if "CANCELLED_BY_USER" in str(e):
             pass
+        else:
+            logging.warning(f"فشل التحميل: {clean_err(str(e))[:200]}")
+            friendly = friendly_error(lang, e)
+            msg = friendly or t["download_error"].format(error=html.escape(clean_err(str(e))[:150]))
+            try:
+                await status_msg.edit_text(msg, parse_mode='HTML', reply_markup=build_reselect_keyboard(lang))
+            except Exception:
+                pass
     finally:
         context.user_data.pop("active_cancel_event", None)
+        cleanup_partial_files(token)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error("حدث خطأ:", exc_info=context.error)
 
 def main():
     request = HTTPXRequest(connect_timeout=15, read_timeout=100, write_timeout=100)
-    app = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
+    application = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_error_handler(error_handler)
 
     print("🚀 البوت يعمل...")
-    app.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
