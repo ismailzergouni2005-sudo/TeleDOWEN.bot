@@ -1,5 +1,6 @@
-flask
-python-telegram-bot
-yt-dlp
+python-telegram-bot[rate-limiter]
+yt-dlp[default]
+deno
 static-ffmpeg
 imageio-ffmpeg
+flask
