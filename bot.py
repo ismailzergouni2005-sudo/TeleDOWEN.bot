@@ -99,11 +99,17 @@ def prepare_cookies():
         has_ig = any("instagram.com" in d for d in domains)
         has_ig_session = any("instagram.com" in d and n == "sessionid" for d, n in names)
         has_fb = any("facebook.com" in d for d in domains)
-        logging.info(f"🍪 عدد الكوكيز: {len(list(jar))} | instagram: {has_ig} | sessionid: {has_ig_session} | facebook: {has_fb}")
+        has_yt = any("youtube.com" in d or "google.com" in d for d in domains)
+        logging.info(
+            f"🍪 عدد الكوكيز: {len(list(jar))} | instagram: {has_ig} | "
+            f"sessionid: {has_ig_session} | facebook: {has_fb} | youtube: {has_yt}"
+        )
         if has_ig and not has_ig_session:
             logging.warning("⚠️ كوكيز إنستغرام لا تحتوي sessionid (الحساب غير مسجل دخول).")
         if not has_ig:
             logging.warning("⚠️ لا توجد كوكيز إنستغرام في الملف.")
+        if not has_yt:
+            logging.warning("⚠️ لا توجد كوكيز يوتيوب في الملف (قد يطلب يوتيوب التحقق من أنك لست روبوتاً).")
     except Exception as e:
         logging.error(f"⚠️ ملف الكوكيز تالف وسيتم تجاهله: {e}")
         try:
@@ -133,6 +139,9 @@ if not FFMPEG_PATH:
 SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+# حد تيليغرام للبوتات 50MB، نترك هامش أمان
+MAX_BYTES = 48 * 1024 * 1024
+
 # ---------------- النصوص متعددة اللغات (HTML) ----------------
 
 TEXTS = {
@@ -143,6 +152,7 @@ TEXTS = {
             "<blockquote><b> ⚡ مرحباً بك في بوت التحميل السريع! ⚡ </b></blockquote>\n\n"
             "أنا هنا لمساعدتك في تحميل الفيديوهات والمقاطع الصوتية بأعلى جودة ممكنة.\n\n"
             "🌐 <b><u>المنصات المدعومة حالياً:</u></b>\n\n"
+            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -152,12 +162,13 @@ TEXTS = {
             "⚡ <i>كل ما عليك هو إرسال رابط الفيديو الآن!</i>"
         ),
         "invalid_url": "❌ يرجى إرسال رابط صحيح.",
-        "youtube_unsupported": "⚠️ منصة يوتيوب غير مدعومة حالياً.",
+        "ig_story_login": "🔒 ستوريات إنستغرام تتطلب تسجيل دخول ولا يمكن تحميلها حالياً.",
         "checking": "🔍 جاري فحص الرابط والجودات...",
         "choose_format": "👇 <b>اختر الصيغة والجودة المطلوبة:</b>",
         "timeout": "⏱ استغرق فحص الرابط وقتاً طويلاً. أعد المحاولة لاحقاً.",
         "analyze_error": "❌ تعذر تحليل الرابط:\n<code>{error}</code>",
         "err_login": "🔒 المنصة رفضت الطلب مؤقتاً (تتطلب تسجيل دخول). حاول مجدداً بعد قليل، وإن تكرر الأمر فسيقوم المشرف بتحديث الجلسة.",
+        "err_yt_bot": "🤖 يوتيوب طلب التحقق من أنك لست روبوتاً. سيقوم المشرف بتحديث الكوكيز، حاول لاحقاً.",
         "err_private": "🔒 هذا المحتوى خاص ولا يمكن تحميله.",
         "err_no_video": "🖼 لا يوجد فيديو في هذا الرابط (قد يكون منشور صور فقط) أو أن الرابط غير مدعوم.",
         "err_unavailable": "🚫 هذا المحتوى غير متاح أو تم حذفه.",
@@ -190,6 +201,7 @@ TEXTS = {
             "<blockquote><b> ⚡ Welcome to Fast Downloader Bot! ⚡ </b></blockquote>\n\n"
             "I'm here to help you download videos and audio clips in the highest possible quality.\n\n"
             "🌐 <b><u>Currently Supported Platforms:</u></b>\n\n"
+            "<code> ▌ Y O U T U B E </code>\n"
             "<code> ▌ T I K T O K </code>\n"
             "<code> ▌ I N S T A G R A M </code>\n"
             "<code> ▌ P I N T E R E S T </code>\n"
@@ -199,12 +211,13 @@ TEXTS = {
             "⚡ <i>Just send any video link now!</i>"
         ),
         "invalid_url": "❌ Please send a valid link.",
-        "youtube_unsupported": "⚠️ YouTube is not supported at the moment.",
+        "ig_story_login": "🔒 Instagram stories require login and can't be downloaded right now.",
         "checking": "🔍 Checking link and qualities...",
         "choose_format": "👇 <b>Select the desired format and quality:</b>",
         "timeout": "⏱ Checking took too long. Please try again later.",
         "analyze_error": "❌ Failed to analyze link:\n<code>{error}</code>",
         "err_login": "🔒 The platform temporarily rejected the request (login required). Try again shortly; if it persists, the admin will refresh the session.",
+        "err_yt_bot": "🤖 YouTube asked to verify you're not a bot. The admin will refresh cookies, try later.",
         "err_private": "🔒 This content is private and cannot be downloaded.",
         "err_no_video": "🖼 No video found in this link (it may be an image-only post) or the link is unsupported.",
         "err_unavailable": "🚫 This content is unavailable or has been removed.",
@@ -281,6 +294,8 @@ def resolve_url(url: str) -> str:
         return url
 
 def clean_url(url: str) -> str:
+    if "instagram.com/stories/" in url:
+        return url.split("?")[0]
     if "instagram.com" in url:
         match = re.search(
             r'https?://(?:www\.)?instagram\.com/(?:[A-Za-z0-9_.]+/)?(reels?|p|tv)/([A-Za-z0-9_-]+)',
@@ -303,6 +318,8 @@ def friendly_error(lang, e):
         return t["err_no_video"]
     if "private" in low:
         return t["err_private"]
+    if "not a bot" in low or "confirm you" in low:
+        return t["err_yt_bot"]
     if any(k in low for k in ("login", "log in", "cookies", "rate-limit", "rate limit", "empty media response", "sign in", "checkpoint", "authentication")):
         return t["err_login"]
     if any(k in low for k in ("not available", "unavailable", "removed", "404", "does not exist", "deleted")):
@@ -456,7 +473,7 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
     else:
         lines.append(f"{t['account']}: {t['unknown']}")
 
-    text_content = description or title
+    text_content = title or description
     if text_content:
         clean_text = text_content.strip().split('\n')[0]
         short_text = clean_text if len(clean_text) <= 80 else clean_text[:77] + "..."
@@ -480,6 +497,13 @@ def build_meta_caption(lang, uploader=None, uploader_url=None, duration=None, vi
 def get_available_options(info):
     formats = info.get("formats") or []
     candidates = {}
+    audio_size = 0
+
+    # أكبر ملف صوتي فقط (لحساب الحجم التقريبي بعد الدمج)
+    for f in formats:
+        if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none"):
+            s = f.get("filesize") or f.get("filesize_approx") or 0
+            audio_size = max(audio_size, s)
 
     for f in formats:
         h = f.get("height")
@@ -499,32 +523,46 @@ def get_available_options(info):
         except (TypeError, ValueError):
             continue
 
+        # الأفضلية: h264 ثم mp4 ثم الباقي
+        rank = 2 if str(vcodec).startswith(("avc", "h264")) else (1 if ext == "mp4" else 0)
+        size = f.get("filesize") or f.get("filesize_approx") or 0
+        if size and f.get("acodec") in (None, "none"):
+            size += audio_size
+
         prev = candidates.get(h)
-        if prev is None or (ext == "mp4" and prev.get("ext") != "mp4"):
-            candidates[h] = {"ext": ext}
+        if prev is None or rank > prev["rank"]:
+            candidates[h] = {"ext": ext, "rank": rank, "size": size}
 
     if not candidates:
-        # لا تعرض جودات افتراضية غير موجودة فعلياً؛ فقد يختار المستخدم
-        # 1080p مثلاً بينما المنصة لم تُرجع أي صيغة بهذه الجودة.
+        # لا تعرض جودات افتراضية غير موجودة فعلياً
         height_from_info = info.get("height")
         if height_from_info:
             try:
-                candidates[int(height_from_info)] = {"ext": str(info.get("ext") or "mp4")}
+                candidates[int(height_from_info)] = {
+                    "ext": str(info.get("ext") or "mp4"), "rank": 0, "size": 0
+                }
             except (TypeError, ValueError):
                 pass
 
     return candidates
 
+def visible_heights(video_opts):
+    """الجودات التي لا تتجاوز حد 50MB (أو أصغر جودة إن لم تتوفر أي واحدة)."""
+    heights = sorted(video_opts.keys(), reverse=True)
+    fit = [h for h in heights if not video_opts[h].get("size") or video_opts[h]["size"] <= MAX_BYTES]
+    return (fit or heights[-1:])[:6]
+
 def build_quality_keyboard(lang, video_opts):
     t = TEXTS[lang]
     rows = []
-    heights = sorted(video_opts.keys(), reverse=True)[:6]
+    heights = visible_heights(video_opts)
 
     buttons = []
     for h in heights:
-        ext = str(video_opts[h]["ext"]).upper()
-        label = f"🎬 {h}p ({ext})"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"q_{h}"))
+        opt = video_opts[h]
+        ext = str(opt["ext"]).upper()
+        size_txt = f" • {opt['size'] / (1024 * 1024):.0f}MB" if opt.get("size") else ""
+        buttons.append(InlineKeyboardButton(f"🎬 {h}p ({ext}){size_txt}", callback_data=f"q_{h}"))
 
     for i in range(0, len(buttons), 2):
         rows.append(buttons[i:i + 2])
@@ -776,7 +814,7 @@ async def progress_ticker(status_msg, meta_caption, state, cancel_event, lang):
     except asyncio.CancelledError:
         pass
 
-async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=240):
+async def run_with_progress(func, args, status_msg, meta_caption, state, cancel_event, lang, timeout=420):
     loop = asyncio.get_running_loop()
     ticker = asyncio.create_task(progress_ticker(status_msg, meta_caption, state, cancel_event, lang))
     start_time = time.time()
@@ -903,10 +941,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw_url = match.group(0).rstrip(".,;:!?)»”\"'")
 
-    if is_youtube(raw_url):
-        await update.message.reply_text(t["youtube_unsupported"])
-        return
-
     checking_msg = await update.message.reply_text(t["checking"])
     try:
         loop = asyncio.get_running_loop()
@@ -914,8 +948,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = await loop.run_in_executor(None, resolve_url, raw_url)
         url = clean_url(url)
 
-        if is_youtube(url):
-            await checking_msg.edit_text(t["youtube_unsupported"])
+        # ستوريات إنستغرام تتطلب تسجيل دخول دائماً
+        if is_instagram(url) and "/stories/" in url and not os.path.exists(COOKIES_FILE):
+            await checking_msg.edit_text(t["ig_story_login"])
             return
 
         context.user_data['download_url'] = url
@@ -989,10 +1024,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(t["expired"])
         return
 
-    if is_youtube(url):
-        await query.edit_message_text(t["youtube_unsupported"])
-        return
-
     info = context.user_data.get('ytdlp_info') or {}
 
     quality_str = None
@@ -1049,8 +1080,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=True, entry=entry)
 
         elif query.data == "v_instant":
+            # أعلى جودة لا تتجاوز حد 50MB
+            heights = visible_heights(context.user_data.get('video_opts') or {})
+            best_h = heights[0] if heights else None
             filepath, entry = await run_with_progress(
-                yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", None),
+                yt_dlp_download_one_pass, (url, dest_template, state, cancel_event, "video", best_h),
                 status_msg, meta_caption, state, cancel_event, lang
             )
             await send_final_file(bot, chat_id, status_msg, filepath, meta_caption, lang, is_audio=False, entry=entry)
