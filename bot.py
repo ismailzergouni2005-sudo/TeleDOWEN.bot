@@ -504,11 +504,14 @@ def get_available_options(info):
             candidates[h] = {"ext": ext}
 
     if not candidates:
+        # لا تعرض جودات افتراضية غير موجودة فعلياً؛ فقد يختار المستخدم
+        # 1080p مثلاً بينما المنصة لم تُرجع أي صيغة بهذه الجودة.
         height_from_info = info.get("height")
         if height_from_info:
-            candidates[int(height_from_info)] = {"ext": "mp4"}
-        else:
-            return {1080: {"ext": "mp4"}, 720: {"ext": "mp4"}, 480: {"ext": "mp4"}}
+            try:
+                candidates[int(height_from_info)] = {"ext": str(info.get("ext") or "mp4")}
+            except (TypeError, ValueError):
+                pass
 
     return candidates
 
@@ -553,8 +556,11 @@ def get_base_opts(url, use_cookies=True):
         "no_warnings": True,
         "no_color": True,
         "socket_timeout": 20,
-        "retries": 5,
-        "extractor_retries": 3,
+        "retries": 8,
+        "fragment_retries": 8,
+        "file_access_retries": 3,
+        "extractor_retries": 5,
+        "skip_unavailable_fragments": True,
         "geo_bypass": True,
         "noplaylist": True,
         "playlist_items": "1",
@@ -1008,7 +1014,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quality=quality_str
     )
 
-    cancel_event = asyncio.Event()
+    # يُقرأ هذا الحدث من خيط التنزيل ومن حلقة asyncio؛ لذلك نستخدم
+    # threading.Event بدلاً من asyncio.Event لتكون مشاركة الحالة آمنة بين الخيوط.
+    cancel_event = threading.Event()
     context.user_data["active_cancel_event"] = cancel_event
 
     status_msg = await query.edit_message_text(
