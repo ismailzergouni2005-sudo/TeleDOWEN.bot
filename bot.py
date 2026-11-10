@@ -637,19 +637,40 @@ def build_video_format(height=None):
         f"/best"
     )
 
+class _CaptureLogger:
+    """يلتقط رسائل yt-dlp (تحذيرات/أخطاء) لمعرفة السبب الحقيقي عند غياب الصيغ."""
+    def __init__(self):
+        self.msgs = []
+    def debug(self, msg):
+        pass
+    def info(self, msg):
+        pass
+    def warning(self, msg):
+        self.msgs.append(clean_err(msg))
+    def error(self, msg):
+        self.msgs.append(clean_err(msg))
+
+def _no_formats_error(cap):
+    reasons = [m for m in cap.msgs if m and not m.startswith("[")] or cap.msgs
+    detail = " | ".join(reasons[-2:]).strip()
+    return Exception(detail or "No video formats found")
+
 def extract_info_only(url):
     last_err = None
     for use_cookies in cookie_attempts():
+        cap = _CaptureLogger()
         ydl_opts = get_base_opts(url, use_cookies)
         ydl_opts["skip_download"] = True
         ydl_opts["ignore_no_formats_error"] = True
         ydl_opts["format"] = "all"
+        ydl_opts["no_warnings"] = False
+        ydl_opts["logger"] = cap
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             if not info:
-                raise Exception("No video formats found")
+                raise _no_formats_error(cap)
 
             entry = pick_entry(info)
             if entry is not info:
@@ -660,7 +681,7 @@ def extract_info_only(url):
             has_formats = bool(entry.get("formats"))
             has_direct = bool(entry.get("url")) and str(entry.get("ext", "")).lower() not in IMAGE_EXTS
             if not has_formats and not has_direct:
-                raise Exception("No video formats found")
+                raise _no_formats_error(cap)
 
             return entry
         except Exception as e:
