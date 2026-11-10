@@ -118,6 +118,7 @@ def prepare_cookies():
             pass
 
 prepare_cookies()
+logging.info(f"🔧 deno: {shutil.which('deno')} | yt-dlp: {yt_dlp.version.__version__}")
 # ---------------------------------------------------------------------
 
 PROXY_URL = os.environ.get("PROXY_URL")
@@ -973,7 +974,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.warning(f"فشل تحليل الرابط: {clean_err(str(e))[:300]}")
         friendly = friendly_error(lang, e)
-        msg = friendly or t["analyze_error"].format(error=html.escape(clean_err(str(e))[:150]))
+        if is_youtube(raw_url):
+            msg = t["analyze_error"].format(error=html.escape(clean_err(str(e))[:400]))
+        else:
+            msg = friendly or t["analyze_error"].format(error=html.escape(clean_err(str(e))[:150]))
         try:
             await checking_msg.edit_text(msg, parse_mode='HTML')
         except Exception:
