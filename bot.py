@@ -1154,6 +1154,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("active_cancel_event", None)
         cleanup_partial_files(token)
 
+def _diag_extract(url, use_cookies):
+    cap = _CaptureLogger()
+    opts = get_base_opts(url, use_cookies)
+    opts.update({
+        "skip_download": True,
+        "ignore_no_formats_error": True,
+        "format": "all",
+        "no_warnings": False,
+        "logger": cap,
+    })
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+        entry = pick_entry(info)
+        fmts = entry.get("formats") or []
+        video = [f for f in fmts if f.get("vcodec") not in (None, "none") and f.get("height")]
+        return f"formats={len(fmts)} video={len(video)} | " + " | ".join(cap.msgs[-3:])
+    except Exception as e:
+        return f"EXC: {clean_err(str(e))[:300]} | " + " | ".join(cap.msgs[-3:])
+
+async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/diag [رابط] : تقرير تشخيصي عن البيئة وفحص رابط يوتيوب."""
+    import importlib.util
+    test_url = context.args[0] if context.args else "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    ejs = importlib.util.find_spec("yt_dlp_ejs") is not None
+    lines = [
+        f"yt-dlp: {yt_dlp.version.__version__}",
+        f"yt-dlp-ejs مثبتة: {ejs}",
+        f"JS runtimes: {list(JS_RUNTIMES.keys()) or 'لا يوجد'}",
+        f"ffmpeg: {bool(FFMPEG_PATH)}",
+        f"cookies: {os.path.exists(COOKIES_FILE)}",
+        f"proxy: {bool(PROXY_URL)}",
+        f"python: {sys.version.split()[0]}",
+        "",
+        f"اختبار: {test_url}",
+    ]
+    msg = await update.message.reply_text(html.escape("\n".join(lines) + "\n⏳ جاري الفحص..."))
+    loop = asyncio.get_running_loop()
+    for use_cookies in cookie_attempts():
+        res = await loop.run_in_executor(None, _diag_extract, test_url, use_cookies)
+        lines.append(f"[cookies={use_cookies}] {res}")
+    text = html.escape("\n".join(lines))[:3800]
+    try:
+        await msg.edit_text(f"<pre>{text}</pre>", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(text[:3800])
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error("حدث خطأ:", exc_info=context.error)
 
@@ -1162,6 +1209,7 @@ def main():
     application = Application.builder().token(TOKEN).request(request).concurrent_updates(True).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("diag", diag))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
