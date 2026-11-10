@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import html
 import time
@@ -589,6 +590,23 @@ def build_reselect_keyboard(lang):
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "heic"}
 
+def find_js_runtimes():
+    """يبحث عن deno/node/bun في PATH وفي مجلد بيئة بايثون (.venv/bin) ويمررها لـ yt-dlp."""
+    found = {}
+    venv_bin = os.path.dirname(sys.executable)
+    for name in ("deno", "node", "bun"):
+        path = shutil.which(name)
+        if not path:
+            cand = os.path.join(venv_bin, name)
+            if os.path.exists(cand):
+                path = cand
+        if path:
+            found[name] = {"path": path}
+    return found
+
+JS_RUNTIMES = find_js_runtimes()
+logging.info(f"🔧 JS runtimes: {list(JS_RUNTIMES.keys()) or 'لا يوجد'} | {JS_RUNTIMES}")
+
 def get_base_opts(url, use_cookies=True):
     ydl_opts = {
         "quiet": True,
@@ -611,6 +629,11 @@ def get_base_opts(url, use_cookies=True):
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
     if PROXY_URL:
         ydl_opts["proxy"] = PROXY_URL
+    if is_youtube(url):
+        if JS_RUNTIMES:
+            ydl_opts["js_runtimes"] = JS_RUNTIMES
+        # تنزيل سكربت حل التحدي من GitHub إن لم تكن حزمة yt-dlp-ejs مثبتة
+        ydl_opts["remote_components"] = ["ejs:github"]
     return ydl_opts
 
 def cookie_attempts():
